@@ -95,8 +95,8 @@ done
 ## -------------------------------------------------------------- ##
 
 ## Fix wallpaper in xfce
-#mv /usr/share/backgrounds/xfce/xfce-shapes.svg /usr/share/backgrounds/xfce/xfce-shapes-ac.svg
-#cp -rf /usr/share/backgrounds/default.jpg /usr/share/backgrounds/xfce/xfce-shapes.svg
+mv /usr/share/backgrounds/xfce/xfce-shapes.svg /usr/share/backgrounds/xfce/xfce-shapes-ac.svg
+cp -rf /usr/share/backgrounds/default.jpg /usr/share/backgrounds/xfce/xfce-shapes.svg
 
 ## -------------------------------------------------------------- ##
 
