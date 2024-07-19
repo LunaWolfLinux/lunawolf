@@ -116,7 +116,7 @@ usbutils
 vim
 #virtualbox-guest-utils-nox
 vpnc
-wezterm-terminfo
+#wezterm-terminfo
 wireless-regdb
 wireless_tools
 wpa_supplicant
@@ -262,6 +262,7 @@ xclip
 xcolor
 xdotool
 yad
+git
 
 # LunaWolf Packages
 lunawolf-cursors
@@ -276,10 +277,6 @@ lunawolf-geany
 lunawolf-config-qt
 lunawolf-hooks-zsh
 lunawolf-fonts
-
-#archcraft-ranger
-#archcraft-vim
-#archcraft-fonts
 
 ## Functionality ------------------------------
 

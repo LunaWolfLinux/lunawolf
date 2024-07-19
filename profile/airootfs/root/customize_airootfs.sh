@@ -146,3 +146,7 @@ for app in "${apps[@]}"; do
 done
 
 ## -------------------------------------------------------------- ##
+
+## Initialize Keyring
+pacman-key --init
+pacman-key --populate
