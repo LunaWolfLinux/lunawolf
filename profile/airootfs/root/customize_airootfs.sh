@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-## Script to perform several important tasks before `mkarchcraftiso` create filesystem image.
-
 set -e -u
 
 ## -------------------------------------------------------------- ##
@@ -94,12 +92,6 @@ done
 
 ## -------------------------------------------------------------- ##
 
-## Fix wallpaper in xfce
-#mv /usr/share/backgrounds/xfce/xfce-shapes.svg /usr/share/backgrounds/xfce/xfce-shapes-ac.svg
-#cp -rf /usr/share/backgrounds/default.jpg /usr/share/backgrounds/xfce/xfce-shapes.svg
-
-## -------------------------------------------------------------- ##
-
 ## Copy Calamares to Desktop
 _desktop="/home/liveuser/Desktop"
 
@@ -115,11 +107,6 @@ chmod +x "${_desktop}"/calamares.desktop
 
 ## Fix grub theme path, issue with ABIF LUKS installation
 sed -i -e 's#GRUB_THEME=.*#GRUB_THEME="/boot/grub/themes/lunawolf/theme.txt"#g' /etc/default/grub
-
-## -------------------------------------------------------------- ##
-
-## Fix cursor theme
-rm -rf /usr/share/icons/default
 
 ## -------------------------------------------------------------- ##
 
@@ -143,4 +130,29 @@ pacman-key --populate
 ## Initialize GNOME Keyring
 gnome-keyring-daemon --start --components=secrets,pkcs11,ssh
 
-pacman -R gdm
+## -------------------------------------------------------------- ##
+
+## Enable GDM
+systemctl enable gdm
+
+## -------------------------------------------------------------- ##
+
+## Apply GDM Theme
+mv /usr/share/gnome-shell/gnome-shell-theme.gresourced /usr/share/gnome-shell/gnome-shell-theme.gresource
+
+## -------------------------------------------------------------- ##
+
+## Fix Extension Perms
+chmod -R 755 /etc/skel/.local/share/gnome-shell/extensions
+chmod -R 755 /home/liveuser/.local/share/gnome-shell/extensions
+
+## -------------------------------------------------------------- ##
+
+## Remove MOTD from Login Screen
+sed -i '/pam_motd.so/d' "/etc/pam.d/system-login"
+
+## -------------------------------------------------------------- ##
+
+## Enable Network Manager
+set +e +u
+systemctl enable NetworkManager || echo "Warning: some_command failed, continuing..."

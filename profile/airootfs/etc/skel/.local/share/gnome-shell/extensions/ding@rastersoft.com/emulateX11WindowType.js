@@ -42,8 +42,9 @@ class ManageWindow {
        even to decorated windows.
     */
 
-    constructor(window, waylandClient, changedStatusCB) {
+    constructor(window, waylandClient, X11Emulator, changedStatusCB) {
         this._waylandClient = waylandClient;
+        this._X11Emulator = X11Emulator;
         this._window = window;
         this._signalIDs = [];
         this._changedStatusCB = changedStatusCB;
@@ -69,14 +70,30 @@ class ManageWindow {
             this._window.unminimize();
         }));
         this._signalIDs.push(window.connect('notify::maximized-vertically', () => {
-            if (!window.maximized_vertically) {
-                window.maximize(Meta.MaximizeFlags.VERTICAL);
+            if (window.is_maximized) {
+                // Gnome Shell >= 49 API
+                if (!window.is_maximized()) {
+                    window.maximize();
+                }
+            } else {
+                // Gnome Shell < 49 API
+                if (!window.maximized_vertically) {
+                    window.maximize(Meta.MaximizeFlags.VERTICAL);
+                }
             }
             this._moveIntoPlace();
         }));
         this._signalIDs.push(window.connect('notify::maximized-horizontally', () => {
-            if (!window.maximized_horizontally) {
-                window.maximize(Meta.MaximizeFlags.HORIZONTAL);
+            if (window.is_maximized) {
+                // Gnome Shell >= 49 API
+                if (!window.is_maximized()) {
+                    window.maximize();
+                }
+            } else {
+                // Gnome Shell < 49 API
+                if (!window.maximized_horizontally) {
+                    window.maximize(Meta.MaximizeFlags.HORIZONTAL);
+                }
             }
             this._moveIntoPlace();
         }));
@@ -178,6 +195,22 @@ class ManageWindow {
                     console.log(`Exception ${e.message}.\n${e.stack}`);
                 }
             }
+            // This string must match the one at desktopManager.js
+            if (title.startsWith("Desktop Icons ")) {
+                this._keepAtBottom = true;
+                this._keepAtTop = false;
+                this._showInAllDesktops = true;
+                this._hideFromWindowList = true;
+                this._fixed = true;
+                try {
+                    const desktopIndex = parseInt(title.substring(14).trim());
+                    const desktopData = this._X11Emulator.getMonitorData(desktopIndex - 1);
+                    this._x = desktopData.x;
+                    this._y = desktopData.y;
+                } catch (e) {
+                    console.log(`Exception ${e.message}.\n${e.stack}`);
+                }
+            }
             if (this._waylandClient) {
                 if (this._hideFromWindowList) {
                     this._waylandClient.hide_from_window_list(this._window);
@@ -235,6 +268,18 @@ export class EmulateX11WindowType {
         this._windowList = [];
         this._enableRefresh = true;
         this._waylandClient = null;
+        this._monitorData = [];
+    }
+
+    setMonitorData(data) {
+        this._monitorData = data;
+    }
+
+    getMonitorData(idx) {
+        if (idx >= this._monitorData.length) {
+            return null;
+        }
+        return this._monitorData[idx];
     }
 
     setWaylandClient(client) {
@@ -328,7 +373,7 @@ export class EmulateX11WindowType {
         if (window.get_meta_window) { // it is a MetaWindowActor
             window = window.get_meta_window();
         }
-        window.customJS_ding = new ManageWindow(window, this._waylandClient, () => {
+        window.customJS_ding = new ManageWindow(window, this._waylandClient, this, () => {
             this._refreshWindows(true);
         });
         this._windowList.push(window);

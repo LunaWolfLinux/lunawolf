@@ -8,11 +8,6 @@ shopt -s extglob
 # Control the environment
 umask 0022
 export LC_ALL="C.UTF-8"
-if [[ -v LANGUAGE ]]; then
-    # LC_ALL=C.UTF-8, unlike LC_ALL=C, does not override LANGUAGE.
-    # See https://sourceware.org/bugzilla/show_bug.cgi?id=16621 and https://savannah.gnu.org/bugs/?62815
-    unset LANGUAGE
-fi
 [[ -v SOURCE_DATE_EPOCH ]] || printf -v SOURCE_DATE_EPOCH '%(%s)T' -1
 export SOURCE_DATE_EPOCH
 
@@ -38,18 +33,28 @@ arch=""
 pacman_conf=""
 packages=""
 bootstrap_packages=""
+bootstrap_parent=""
 pacstrap_dir=""
+search_filename=""
 declare -i rm_work_dir=0
 buildmodes=()
 bootmodes=()
 airootfs_image_type=""
 airootfs_image_tool_options=()
+bootstrap_tarball_compression=""
 cert_list=()
 declare -A file_permissions=()
 efibootimg=""
 efiboot_files=()
 # adapted from GRUB_EARLY_INITRD_LINUX_STOCK in https://git.savannah.gnu.org/cgit/grub.git/tree/util/grub-mkconfig.in
 readonly ucodes=('intel-uc.img' 'intel-ucode.img' 'amd-uc.img' 'amd-ucode.img' 'early_ucode.cpio' 'microcode.cpio')
+declare -i need_external_ucodes=0
+readonly -A uefi_arch=(
+    ['x86_64']='x64'
+    ['aarch64']='AA64'
+    ['riscv64']='RISCV64'
+    ['loongarch64']='LOONGARCH64'
+)
 
 
 # Show an INFO message
@@ -172,7 +177,7 @@ _cleanup_pacstrap_dir() {
     # Create /etc/machine-id with special value 'uninitialized': the final id is
     # generated on first boot, systemd's first-boot mechanism applies (see machine-id(5))
     rm -f -- "${pacstrap_dir}/etc/machine-id"
-    printf 'uninitialized\n' > "${pacstrap_dir}/etc/machine-id"
+    printf 'uninitialized\n' >"${pacstrap_dir}/etc/machine-id"
 
     _msg_info "Done!"
 }
@@ -206,8 +211,7 @@ _mkairootfs_ext4+squashfs() {
     )
     [[ ! "${quiet}" == "y" ]] || mkfs_ext4_options+=('-q')
     rm -f -- "${pacstrap_dir}.img"
-    E2FSPROGS_FAKE_TIME="${SOURCE_DATE_EPOCH}" mkfs.ext4 "${mkfs_ext4_options[@]}" -- "${pacstrap_dir}.img" 32G
-    tune2fs -c 0 -i 0 -- "${pacstrap_dir}.img" > /dev/null
+    mkfs.ext4 "${mkfs_ext4_options[@]}" -- "${pacstrap_dir}.img" 32G
     _msg_info "Done!"
 
     install -d -m 0755 -- "${isofs_dir}/${install_dir}/${arch}"
@@ -228,16 +232,14 @@ _mkairootfs_squashfs() {
 
 # Create an EROFS image containing the root file system and saves it on the ISO 9660 file system.
 _mkairootfs_erofs() {
-    local fsuuid mkfs_erofs_options=()
+    local mkfs_erofs_options=()
     [[ -e "${pacstrap_dir}" ]] || _msg_error "The path '${pacstrap_dir}' does not exist" 1
 
     install -d -m 0755 -- "${isofs_dir}/${install_dir}/${arch}"
     local image_path="${isofs_dir}/${install_dir}/${arch}/airootfs.erofs"
     rm -f -- "${image_path}"
     [[ ! "${quiet}" == "y" ]] || mkfs_erofs_options+=('--quiet')
-    # Generate reproducible file system UUID from SOURCE_DATE_EPOCH
-    fsuuid="$(uuidgen --sha1 --namespace 93a870ff-8565-4cf3-a67b-f47299271a96 --name "${SOURCE_DATE_EPOCH}")"
-    mkfs_erofs_options+=('-U' "${fsuuid}" "${airootfs_image_tool_options[@]}")
+    mkfs_erofs_options+=('-U' '00000000-0000-0000-0000-000000000000' "${airootfs_image_tool_options[@]}")
     _msg_info "Creating EROFS image, this may take some time..."
     mkfs.erofs "${mkfs_erofs_options[@]}" -- "${image_path}" "${pacstrap_dir}"
     _msg_info "Done!"
@@ -248,9 +250,9 @@ _mkchecksum() {
     _msg_info "Creating checksum file for self-test..."
     cd -- "${isofs_dir}/${install_dir}/${arch}"
     if [[ -e "${isofs_dir}/${install_dir}/${arch}/airootfs.sfs" ]]; then
-        sha512sum airootfs.sfs > airootfs.sha512
+        sha512sum airootfs.sfs >airootfs.sha512
     elif [[ -e "${isofs_dir}/${install_dir}/${arch}/airootfs.erofs" ]]; then
-        sha512sum airootfs.erofs > airootfs.sha512
+        sha512sum airootfs.erofs >airootfs.sha512
     fi
     cd -- "${OLDPWD}"
     _msg_info "Done!"
@@ -283,12 +285,12 @@ _run_once() {
 # Set up custom pacman.conf with custom cache and pacman hook directories.
 _make_pacman_conf() {
     local _cache_dirs _system_cache_dirs _profile_cache_dirs
-    _system_cache_dirs="$(pacman-conf CacheDir| tr '\n' ' ')"
-    _profile_cache_dirs="$(pacman-conf --config "${pacman_conf}" CacheDir| tr '\n' ' ')"
+    _system_cache_dirs="$(pacman-conf CacheDir | tr '\n' ' ')"
+    _profile_cache_dirs="$(pacman-conf --config "${pacman_conf}" CacheDir | tr '\n' ' ')"
 
     # Only use the profile's CacheDir, if it is not the default and not the same as the system cache dir.
-    if [[ "${_profile_cache_dirs}" != "/var/cache/pacman/pkg" ]] && \
-        [[ "${_system_cache_dirs}" != "${_profile_cache_dirs}" ]]; then
+    if [[ "${_profile_cache_dirs}" != "/var/cache/pacman/pkg" ]] \
+        && [[ "${_system_cache_dirs}" != "${_profile_cache_dirs}" ]]; then
         _cache_dirs="${_profile_cache_dirs}"
     else
         _cache_dirs="${_system_cache_dirs}"
@@ -300,9 +302,9 @@ _make_pacman_conf() {
     # append CacheDir and HookDir to [options] section
     # HookDir is *always* set to the airootfs' override directory
     # see `man 8 pacman` for further info
-    pacman-conf --config "${pacman_conf}" | \
-        sed "/CacheDir/d;/DBPath/d;/HookDir/d;/LogFile/d;/RootDir/d;/\[options\]/a CacheDir = ${_cache_dirs}
-        /\[options\]/a HookDir = ${pacstrap_dir}/etc/pacman.d/hooks/" > "${work_dir}/${buildmode}.pacman.conf"
+    pacman-conf --config "${pacman_conf}" \
+        | sed "/CacheDir/d;/DBPath/d;/HookDir/d;/LogFile/d;/RootDir/d;/\[options\]/a CacheDir = ${_cache_dirs}
+        /\[options\]/a HookDir = ${pacstrap_dir}/etc/pacman.d/hooks/" >"${work_dir}/${buildmode}.pacman.conf"
 }
 
 # Prepare working directory and copy custom root file system files.
@@ -317,7 +319,7 @@ _make_custom_airootfs() {
         cp -af --no-preserve=ownership,mode -- "${profile}/airootfs/." "${pacstrap_dir}"
         # Set ownership and mode for files and directories
         for filename in "${!file_permissions[@]}"; do
-            IFS=':' read -ra permissions <<< "${file_permissions["${filename}"]}"
+            IFS=':' read -ra permissions <<<"${file_permissions["${filename}"]}"
             # Prevent file path traversal outside of $pacstrap_dir
             if [[ "$(realpath -q -- "${pacstrap_dir}${filename}")" != "${pacstrap_dir}"* ]]; then
                 _msg_error "Failed to set permissions on '${pacstrap_dir}${filename}'. Outside of valid path." 1
@@ -357,12 +359,10 @@ _make_packages() {
 
 
     # Unset TMPDIR to work around https://bugs.archlinux.org/task/70580
-
-    # LunaWolf Change [-i] (CUSTOM)
     if [[ "${quiet}" = "y" ]]; then
-        env -u TMPDIR pacstrap -C "${work_dir}/${buildmode}.pacman.conf" -i -c -G -M -- "${pacstrap_dir}" "${buildmode_pkg_list[@]}" &> /dev/null
+        env -u TMPDIR pacstrap -C "${work_dir}/${buildmode}.pacman.conf" -c -G -M -- "${pacstrap_dir}" "${buildmode_pkg_list[@]}" >/dev/null
     else
-        env -u TMPDIR pacstrap -C "${work_dir}/${buildmode}.pacman.conf" -i -c -G -M -- "${pacstrap_dir}" "${buildmode_pkg_list[@]}"
+        env -u TMPDIR pacstrap -C "${work_dir}/${buildmode}.pacman.conf" -c -G -M -- "${pacstrap_dir}" "${buildmode_pkg_list[@]}"
     fi
 
     if [[ -v cert_list[0] ]]; then
@@ -404,21 +404,9 @@ _make_customize_airootfs() {
             else
                 _msg_error "Failed to set permissions on '${pacstrap_dir}${passwd[5]}'. Outside of valid path." 1
             fi
-        done < "${profile}/airootfs/etc/passwd"
+        done <"${profile}/airootfs/etc/passwd"
         _msg_info "Done!"
     fi
-
-    # LunaWolf Change [Run script right before generating sfs image] (CUSTOM)
-	# START : (CUSTOM) : customize_sfs.sh
-    if [[ -e "${pacstrap_dir}/root/customize_sfs.sh" ]]; then
-        _msg_info "Running customize_sfs.sh in '${pacstrap_dir}' chroot..."
-        chmod -f -- +x "${pacstrap_dir}/root/customize_sfs.sh"
-        # Unset TMPDIR to work around https://bugs.archlinux.org/task/70580
-        eval -- env -u TMPDIR arch-chroot "${pacstrap_dir}" "/root/customize_sfs.sh"
-        rm -- "${pacstrap_dir}/root/customize_sfs.sh"
-        _msg_info "Done! customize_sfs.sh run successfully."
-    fi
-	# END : (CUSTOM) : customize_sfs.sh
 
     if [[ -e "${pacstrap_dir}/root/customize_airootfs.sh" ]]; then
         _msg_info "Running customize_airootfs.sh in '${pacstrap_dir}' chroot..."
@@ -437,6 +425,10 @@ _make_bootmodes() {
     for bootmode in "${bootmodes[@]}"; do
         _run_once "_make_bootmode_${bootmode}"
     done
+
+    if [[ "${bootmodes[*]}" != *grub* ]]; then
+        _run_once _make_common_grubenv_and_loopbackcfg
+    fi
 }
 
 # Copy kernel and initramfs to ISO 9660
@@ -447,29 +439,31 @@ _make_boot_on_iso9660() {
     install -m 0644 -- "${pacstrap_dir}/boot/initramfs-"*".img" "${isofs_dir}/${install_dir}/boot/${arch}/"
     install -m 0644 -- "${pacstrap_dir}/boot/vmlinuz-"* "${isofs_dir}/${install_dir}/boot/${arch}/"
 
-    for ucode_image in "${ucodes[@]}"; do
-        if [[ -e "${pacstrap_dir}/boot/${ucode_image}" ]]; then
-            install -m 0644 -- "${pacstrap_dir}/boot/${ucode_image}" "${isofs_dir}/${install_dir}/boot/"
-            if [[ -e "${pacstrap_dir}/usr/share/licenses/${ucode_image%.*}/" ]]; then
-                install -d -m 0755 -- "${isofs_dir}/${install_dir}/boot/licenses/${ucode_image%.*}/"
-                install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/${ucode_image%.*}/"* \
-                    "${isofs_dir}/${install_dir}/boot/licenses/${ucode_image%.*}/"
+    if (( need_external_ucodes )); then
+        for ucode_image in "${ucodes[@]}"; do
+            if [[ -e "${pacstrap_dir}/boot/${ucode_image}" ]]; then
+                install -m 0644 -- "${pacstrap_dir}/boot/${ucode_image}" "${isofs_dir}/${install_dir}/boot/"
+                if [[ -e "${pacstrap_dir}/usr/share/licenses/${ucode_image%.*}/" ]]; then
+                    install -d -m 0755 -- "${isofs_dir}/${install_dir}/boot/licenses/${ucode_image%.*}/"
+                    install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/${ucode_image%.*}/"* \
+                        "${isofs_dir}/${install_dir}/boot/licenses/${ucode_image%.*}/"
+                fi
             fi
-        fi
-    done
+        done
+    fi
     _msg_info "Done!"
 }
 
-# Prepare syslinux for booting from MBR (isohybrid)
-_make_bootmode_bios.syslinux.mbr() {
-    _msg_info "Setting up SYSLINUX for BIOS booting from a disk..."
+# Prepare syslinux for booting from MBR (isohybrid) and El-Torito booting
+_make_bootmode_bios.syslinux() {
+    _msg_info "Setting up SYSLINUX for BIOS booting..."
     install -d -m 0755 -- "${isofs_dir}/boot/syslinux"
     for _cfg in "${profile}/syslinux/"*.cfg; do
         sed "s|%ARCHISO_LABEL%|${iso_label}|g;
              s|%ARCHISO_UUID%|${iso_uuid}|g;
              s|%INSTALL_DIR%|${install_dir}|g;
              s|%ARCH%|${arch}|g" \
-             "${_cfg}" > "${isofs_dir}/boot/syslinux/${_cfg##*/}"
+            "${_cfg}" >"${isofs_dir}/boot/syslinux/${_cfg##*/}"
     done
     if [[ -e "${profile}/syslinux/splash.png" ]]; then
         install -m 0644 -- "${profile}/syslinux/splash.png" "${isofs_dir}/boot/syslinux/"
@@ -495,22 +489,21 @@ _make_bootmode_bios.syslinux.mbr() {
         install -d -m 0755 -- "${isofs_dir}/boot/memtest86+/"
         # rename for PXE: https://wiki.archlinux.org/title/Syslinux#Using_memtest
         install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest.bin" "${isofs_dir}/boot/memtest86+/memtest"
-        install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/common/GPL2/license.txt" "${isofs_dir}/boot/memtest86+/"
+        install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt" "${isofs_dir}/boot/memtest86+/LICENSE"
     fi
-    _msg_info "Done! SYSLINUX set up for BIOS booting from a disk successfully."
-}
 
-# Prepare syslinux for El-Torito booting
-_make_bootmode_bios.syslinux.eltorito() {
-    _msg_info "Setting up SYSLINUX for BIOS booting from an optical disc..."
     install -d -m 0755 -- "${isofs_dir}/boot/syslinux"
     install -m 0644 -- "${pacstrap_dir}/usr/lib/syslinux/bios/isolinux.bin" "${isofs_dir}/boot/syslinux/"
     install -m 0644 -- "${pacstrap_dir}/usr/lib/syslinux/bios/isohdpfx.bin" "${isofs_dir}/boot/syslinux/"
 
-    # ISOLINUX and SYSLINUX installation is shared
-    _run_once _make_bootmode_bios.syslinux.mbr
-
-    _msg_info "Done! SYSLINUX set up for BIOS booting from an optical disc successfully."
+    _msg_info "Done! SYSLINUX set up for BIOS booting successfully."
+}
+# Deprecated boot modes
+_make_bootmode_bios.syslinux.eltorito() {
+    return 1
+}
+_make_bootmode_bios.syslinux.mbr() {
+    return 1
 }
 
 # Copy kernel and initramfs to FAT image
@@ -521,13 +514,15 @@ _make_boot_on_fat() {
         "::/${install_dir}" "::/${install_dir}/boot" "::/${install_dir}/boot/${arch}"
     mcopy -i "${efibootimg}" "${pacstrap_dir}/boot/vmlinuz-"* \
         "${pacstrap_dir}/boot/initramfs-"*".img" "::/${install_dir}/boot/${arch}/"
-    for ucode_image in "${ucodes[@]}"; do
-        if [[ -e "${pacstrap_dir}/boot/${ucode_image}" ]]; then
-            all_ucode_images+=("${pacstrap_dir}/boot/${ucode_image}")
+    if (( need_external_ucodes )); then
+        for ucode_image in "${ucodes[@]}"; do
+            if [[ -e "${pacstrap_dir}/boot/${ucode_image}" ]]; then
+                all_ucode_images+=("${pacstrap_dir}/boot/${ucode_image}")
+            fi
+        done
+        if (( ${#all_ucode_images[@]} )); then
+            mcopy -i "${efibootimg}" "${all_ucode_images[@]}" "::/${install_dir}/boot/"
         fi
-    done
-    if (( ${#all_ucode_images[@]} )); then
-        mcopy -i "${efibootimg}" "${all_ucode_images[@]}" "::/${install_dir}/boot/"
     fi
     _msg_info "Done!"
 }
@@ -537,18 +532,23 @@ _make_boot_on_fat() {
 _make_efibootimg() {
     local imgsize_kib="0"
     local imgsize_bytes=${1}
+    local mkfs_fat_opts=(-C -n ARCHISO_EFI)
 
-    if (( imgsize_bytes < 2*1024*1024 )); then
-        _msg_info "Validating '${bootmode}': efiboot.img size is ${imgsize_bytes} bytes is less than 2 MiB! Bumping up to 2 MiB"
-        imgsize_bytes=$((2*1024*1024))
-    fi
-
-    # Convert from bytes to KiB and round up to the next full MiB with an additional MiB for reserved sectors.
-    imgsize_kib="$(awk 'function ceil(x){return int(x)+(x>int(x))}
+    # Convert from bytes to KiB and round up to the next full MiB with an additional 8 MiB for reserved sectors, file
+    # and directory entries and to allow adding custom files when repacking the ISO.
+    imgsize_kib="$(
+        awk 'function ceil(x){return int(x)+(x>int(x))}
             function byte_to_kib(x){return x/1024}
             function mib_to_kib(x){return x*1024}
-            END {print mib_to_kib(ceil((byte_to_kib($1)+1024)/1024))}' <<< "${imgsize_bytes}"
+            END {print mib_to_kib(ceil((byte_to_kib($1)+8192)/1024))}' <<<"${imgsize_bytes}"
     )"
+
+    # Use FAT32 as early as possible. mkfs.fat selects FAT32 if the size ≥ 512 MiB, but a FAT32 file system can already
+    # be created at 36 MiB size (assuming 512 byte logical sector size).
+    if (( imgsize_kib >= 36864 )); then
+        mkfs_fat_opts+=(-F 32)
+    fi
+
     # The FAT image must be created with mkfs.fat not mformat, as some systems have issues with mformat made images:
     # https://lists.gnu.org/archive/html/grub-devel/2019-04/msg00099.html
     rm -f -- "${efibootimg}"
@@ -556,38 +556,33 @@ _make_efibootimg() {
     if [[ "${quiet}" == "y" ]]; then
         # mkfs.fat does not have a -q/--quiet option, so redirect stdout to /dev/null instead
         # https://github.com/dosfstools/dosfstools/issues/103
-        mkfs.fat -C -n ARCHISO_EFI "${efibootimg}" "${imgsize_kib}" > /dev/null
+        mkfs.fat "${mkfs_fat_opts[@]}" "${efibootimg}" "${imgsize_kib}" >/dev/null
     else
-        mkfs.fat -C -n ARCHISO_EFI "${efibootimg}" "${imgsize_kib}"
+        mkfs.fat "${mkfs_fat_opts[@]}" "${efibootimg}" "${imgsize_kib}"
     fi
 
     # Create the default/fallback boot path in which a boot loaders will be placed later.
     mmd -i "${efibootimg}" ::/EFI ::/EFI/BOOT
 }
 
-# Copy GRUB files to ISO 9660 which is used by both IA32 UEFI and x64 UEFI
-_make_common_bootmode_grub_copy_to_isofs() {
-    local files_to_copy=()
+# Check if initramfs files contain microcode update files
+_check_if_initramfs_has_ucode() {
+    local initrd
 
-    files_to_copy+=("${work_dir}/grub/"*)
-    if compgen -G "${profile}/grub/!(*.cfg)" &> /dev/null; then
-        files_to_copy+=("${profile}/grub/"!(*.cfg))
-    fi
-    install -d -m 0755 -- "${isofs_dir}/boot/grub"
-    cp -r --remove-destination -- "${files_to_copy[@]}" "${isofs_dir}/boot/grub/"
+    for initrd in $(compgen -G "${pacstrap_dir}"'/boot/initramfs-*.img'); do
+        if ! bsdtar -tf "$initrd" 'early_cpio' 'kernel/x86/microcode/*.bin' &>/dev/null; then
+            need_external_ucodes=1
+            _msg_info "Initramfs file does not contain microcode update files. External microcode initramfs images will be copied."
+            return
+        fi
+    done
 }
 
 # Prepare GRUB configuration files
-_make_common_bootmode_grub_cfg(){
-    local _cfg search_filename
+_make_common_bootmode_grub_cfg() {
+    local _cfg
 
     install -d -- "${work_dir}/grub"
-
-    # Create a /boot/grub/YYYY-mm-dd-HH-MM-SS-00.uuid file on ISO 9660. GRUB will search for it to find the ISO
-    # volume. This is similar to what grub-mkrescue does, except it places the file in /.disk/, but we opt to use a
-    # directory that does not start with a dot to avoid it being accidentally missed when copying the ISO's contents.
-    : > "${work_dir}/grub/${iso_uuid}.uuid"
-    search_filename="/boot/grub/${iso_uuid}.uuid"
 
     # Fill GRUB configuration files
     for _cfg in "${profile}/grub/"*'.cfg'; do
@@ -596,7 +591,7 @@ _make_common_bootmode_grub_cfg(){
              s|%INSTALL_DIR%|${install_dir}|g;
              s|%ARCH%|${arch}|g;
              s|%ARCHISO_SEARCH_FILENAME%|${search_filename}|g" \
-             "${_cfg}" > "${work_dir}/grub/${_cfg##*/}"
+            "${_cfg}" >"${work_dir}/grub/${_cfg##*/}"
     done
 
     # Prepare grub.cfg that will be embedded inside the GRUB binaries
@@ -639,7 +634,7 @@ else
 fi
 EOF
     grubembedcfg="${grubembedcfg//'%ARCHISO_SEARCH_FILENAME%'/"${search_filename}"}"
-    printf '%s\n' "$grubembedcfg" > "${work_dir}/grub-embed.cfg"
+    printf '%s\n' "$grubembedcfg" >"${work_dir}/grub-embed.cfg"
 
     # Write grubenv
     printf '%.1024s' \
@@ -651,11 +646,48 @@ EOF
             "${arch}" \
             "${search_filename}" \
             "$(printf '%0.1s' "#"{1..1024})")" \
-        > "${work_dir}/grub/grubenv"
+        >"${work_dir}/grub/grubenv"
 }
 
-_make_bootmode_uefi-ia32.grub.esp() {
-    local grubmodules=()
+# Create GRUB specific configuration files when GRUB is not used as a boot loader
+_make_common_grubenv_and_loopbackcfg() {
+
+    install -d -m 0755 -- "${isofs_dir}/boot/grub"
+    # Write grubenv
+    printf '%.1024s' \
+        "$(printf '# GRUB Environment Block\nNAME=%s\nVERSION=%s\nARCHISO_LABEL=%s\nINSTALL_DIR=%s\nARCH=%s\nARCHISO_SEARCH_FILENAME=%s\n%s' \
+            "${iso_name}" \
+            "${iso_version}" \
+            "${iso_label}" \
+            "${install_dir}" \
+            "${arch}" \
+            "${search_filename}" \
+            "$(printf '%0.1s' "#"{1..1024})")" \
+        >"${isofs_dir}/boot/grub/grubenv"
+
+    # Copy loopback.cfg to /boot/grub/ on ISO 9660
+    if [[ -e "${profile}/grub/loopback.cfg" ]]; then
+        sed "s|%ARCHISO_LABEL%|${iso_label}|g;
+             s|%ARCHISO_UUID%|${iso_uuid}|g;
+             s|%INSTALL_DIR%|${install_dir}|g;
+             s|%ARCH%|${arch}|g;
+             s|%ARCHISO_SEARCH_FILENAME%|${search_filename}|g" \
+            "${profile}/grub/loopback.cfg" >"${isofs_dir}/boot/grub/loopback.cfg"
+    fi
+}
+
+# Prepare GRUB
+_make_bootmode_uefi.grub() {
+    local grub_target grubmodules=() files_to_copy=()
+    local -i efiboot_imgsize
+
+    _msg_info "Setting up GRUB for UEFI booting..."
+
+    # Get GRUB-specific architecture name
+    case "$arch" in
+        'aarch64') grub_target='arm64-efi' ;;
+        *) grub_target="${arch}-efi" ;;
+    esac
 
     # Prepare configuration files
     _run_once _make_common_bootmode_grub_cfg
@@ -667,240 +699,215 @@ _make_bootmode_uefi-ia32.grub.esp() {
                  minicmd normal ntfs ntfscomp part_apple part_gpt part_msdos png read reboot regexp search \
                  search_fs_file search_fs_uuid search_label serial sleep tpm udf usb usbserial_common usbserial_ftdi \
                  usbserial_pl2303 usbserial_usbdebug video xfs zstd)
-    grub-mkstandalone -O i386-efi \
-                      --modules="${grubmodules[*]}" \
-                      --locales="en@quot" \
-                      --themes="" \
-                      --sbat=/usr/share/grub/sbat.csv \
-                      --disable-shim-lock \
-                      -o "${work_dir}/BOOTIA32.EFI" "boot/grub/grub.cfg=${work_dir}/grub-embed.cfg"
+    grub-mkstandalone -O "$grub_target" \
+        --modules="${grubmodules[*]}" \
+        --locales="en@quot" \
+        --themes="" \
+        --sbat=/usr/share/grub/sbat.csv \
+        --disable-shim-lock \
+        -o "${work_dir}/BOOT${uefi_arch[$arch]}.EFI" "boot/grub/grub.cfg=${work_dir}/grub-embed.cfg"
     # Add GRUB to the list of files used to calculate the required FAT image size.
-    efiboot_files+=("${work_dir}/BOOTIA32.EFI"
-                    "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi")
+    efiboot_files+=("${work_dir}/BOOT${uefi_arch[$arch]}.EFI"
+                    "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi")
 
-    if [[ " ${bootmodes[*]} " =~ uefi-x64.systemd-boot.esp ]]; then
-        # TODO: Remove this branch.
-        _run_once _make_bootmode_uefi-x64.systemd-boot.esp
-    elif [[ " ${bootmodes[*]} " =~ uefi-x64.grub.esp ]]; then
-        _run_once _make_bootmode_uefi-x64.grub.esp
-    else
-        efiboot_imgsize="$(du -bcs -- "${efiboot_files[@]}" 2>/dev/null | awk 'END { print $1 }')"
-        # Create a FAT image for the EFI system partition
-        _make_efibootimg "$efiboot_imgsize"
+    # Create IA32 EFI binary for mixed-mode booting on x86_64 systems with IA32 UEFI
+    if [[ "$arch" == 'x86_64' ]]; then
+        grub-mkstandalone -O i386-efi \
+            --modules="${grubmodules[*]}" \
+            --locales="en@quot" \
+            --themes="" \
+            --sbat=/usr/share/grub/sbat.csv \
+            --disable-shim-lock \
+            -o "${work_dir}/BOOTIA32.EFI" "boot/grub/grub.cfg=${work_dir}/grub-embed.cfg"
+        efiboot_files+=("${work_dir}/BOOTIA32.EFI"
+                        "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi")
     fi
 
-    # Copy GRUB EFI binary to the default/fallback boot path
-    mcopy -i "${efibootimg}" "${work_dir}/BOOTIA32.EFI" ::/EFI/BOOT/BOOTIA32.EFI
-
-    # Copy GRUB files
-    _run_once _make_common_bootmode_grub_copy_to_isofs
-
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" ]]; then
-        mcopy -i "${efibootimg}" "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" ::/shellia32.efi
-    fi
-
-    _msg_info "Done! GRUB set up for UEFI booting successfully."
-}
-
-# Prepare GRUB for El Torito booting
-_make_bootmode_uefi-ia32.grub.eltorito() {
-    # El Torito UEFI boot requires an image containing the EFI system partition.
-    # uefi-ia32.grub.eltorito has the same requirements as uefi-ia32.grub.esp
-    _run_once _make_bootmode_uefi-ia32.grub.esp
-
-    # Prepare configuration files
-    _run_once _make_common_bootmode_grub_cfg
-
-    # Additionally set up systemd-boot in ISO 9660. This allows creating a medium for the live environment by using
-    # manual partitioning and simply copying the ISO 9660 file system contents.
-    # This is not related to El Torito booting and no firmware uses these files.
-    _msg_info "Preparing an /EFI directory for the ISO 9660 file system..."
-    install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
-
-    # Copy GRUB EFI binary to the default/fallback boot path
-    install -m 0644 -- "${work_dir}/BOOTIA32.EFI" "${isofs_dir}/EFI/BOOT/BOOTIA32.EFI"
-
-    # Copy GRUB configuration files
-    _run_once _make_common_bootmode_grub_copy_to_isofs
-
-    # edk2-shell based UEFI shell
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" ]]; then
-        install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" "${isofs_dir}/shellia32.efi"
-    fi
-
-    _msg_info "Done!"
-}
-
-_make_bootmode_uefi-x64.grub.esp() {
-    local grubmodules=()
-
-    # Prepare configuration files
-    _run_once _make_common_bootmode_grub_cfg
-
-    # Create EFI binary
-    # Module list from https://bugs.archlinux.org/task/71382#comment202911
-    grubmodules=(all_video at_keyboard boot btrfs cat chain configfile echo efifwsetup efinet exfat ext2 f2fs fat font \
-                 gfxmenu gfxterm gzio halt hfsplus iso9660 jpeg keylayouts linux loadenv loopback lsefi lsefimmap \
-                 minicmd normal ntfs ntfscomp part_apple part_gpt part_msdos png read reboot regexp search \
-                 search_fs_file search_fs_uuid search_label serial sleep tpm udf usb usbserial_common usbserial_ftdi \
-                 usbserial_pl2303 usbserial_usbdebug video xfs zstd)
-    grub-mkstandalone -O x86_64-efi \
-                      --modules="${grubmodules[*]}" \
-                      --locales="en@quot" \
-                      --themes="" \
-                      --sbat=/usr/share/grub/sbat.csv \
-                      --disable-shim-lock \
-                      -o "${work_dir}/BOOTx64.EFI" "boot/grub/grub.cfg=${work_dir}/grub-embed.cfg"
-    # Add GRUB to the list of files used to calculate the required FAT image size.
-    efiboot_files+=("${work_dir}/BOOTx64.EFI"
-                    "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi")
-
+    # Create a FAT image for the EFI system partition
     efiboot_imgsize="$(du -bcs -- "${efiboot_files[@]}" 2>/dev/null | awk 'END { print $1 }')"
-
-    # Create a FAT image for the EFI system partition
     _make_efibootimg "$efiboot_imgsize"
 
+    # Additionally set up GRUB in ISO 9660. This allows creating a medium for the live environment by using
+    # manual partitioning and simply copying the ISO 9660 file system contents.
+    # This is not related to El Torito booting and no firmware uses these files.
+    install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
+
     # Copy GRUB EFI binary to the default/fallback boot path
-    mcopy -i "${efibootimg}" "${work_dir}/BOOTx64.EFI" ::/EFI/BOOT/BOOTx64.EFI
-
-    # Copy GRUB files
-    _run_once _make_common_bootmode_grub_copy_to_isofs
-
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ]]; then
-        mcopy -i "${efibootimg}" "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ::/shellx64.efi
+    mcopy -i "${efibootimg}" "${work_dir}/BOOT${uefi_arch[$arch]}.EFI" "::/EFI/BOOT/BOOT${uefi_arch[$arch]}.EFI"
+    install -m 0644 -- "${work_dir}/BOOT${uefi_arch[$arch]}.EFI" "${isofs_dir}/EFI/BOOT/BOOT${uefi_arch[$arch]}.EFI"
+    # Set up mixed mode booting for x86_64 systems with IA32 UEFI
+    if [[ "$arch" == 'x86_64' ]]; then
+        mcopy -i "${efibootimg}" "${work_dir}/BOOTIA32.EFI" ::/EFI/BOOT/BOOTIA32.EFI
+        install -m 0644 -- "${work_dir}/BOOTIA32.EFI" "${isofs_dir}/EFI/BOOT/BOOTIA32.EFI"
     fi
 
-    # Add other aditional/extra files to ${install_dir}/boot/
-    if [[ -e "${pacstrap_dir}/boot/memtest86+/memtest.efi" ]]; then
-        install -d -m 0755 -- "${isofs_dir}/boot/memtest86+/"
-        install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest.efi" "${isofs_dir}/boot/memtest86+/memtest.efi"
-        install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/common/GPL2/license.txt" "${isofs_dir}/boot/memtest86+/"
+    # Copy GRUB files
+    files_to_copy+=("${work_dir}/grub/"*)
+    if compgen -G "${profile}/grub/!(*.cfg)" &>/dev/null; then
+        files_to_copy+=("${profile}/grub/"!(*.cfg))
+    fi
+    install -d -m 0755 -- "${isofs_dir}/boot/grub"
+    cp -r --remove-destination -- "${files_to_copy[@]}" "${isofs_dir}/boot/grub/"
+
+    # edk2-shell based UEFI shell
+    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi" ]]; then
+        mcopy -i "${efibootimg}" \
+            "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi" "::/shell${uefi_arch[$arch],,}.efi"
+        install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi" \
+            "${isofs_dir}/shell${uefi_arch[$arch],,}.efi"
+    fi
+    if [[ "$arch" == 'x86_64' ]]; then
+        # UEFI shell for x86_64 systems with IA32 UEFI
+        if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" ]]; then
+            mcopy -i "${efibootimg}" "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" ::/shellia32.efi
+            install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi" "${isofs_dir}/shellia32.efi"
+        fi
+
+        # Copy Memtest86+
+        # Only the x64 binary is built. See https://gitlab.archlinux.org/archlinux/packaging/packages/memtest86plus/-/merge_requests/2
+        if [[ -e "${pacstrap_dir}/boot/memtest86+/memtest.efi" ]]; then
+            install -d -m 0755 -- "${isofs_dir}/boot/memtest86+/"
+            install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest.efi" "${isofs_dir}/boot/memtest86+/memtest.efi"
+            install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt" "${isofs_dir}/boot/memtest86+/LICENSE"
+        fi
     fi
 
     _msg_info "Done! GRUB set up for UEFI booting successfully."
 }
-
-# Prepare GRUB for El Torito booting
+# Deprecated boot modes
+_make_bootmode_uefi-ia32.grub.esp() {
+    return 1
+}
+_make_bootmode_uefi-ia32.grub.eltorito() {
+    return 1
+}
+_make_bootmode_uefi-x64.grub.esp() {
+    return 1
+}
 _make_bootmode_uefi-x64.grub.eltorito() {
-    # El Torito UEFI boot requires an image containing the EFI system partition.
-    # uefi-x64.grub.eltorito has the same requirements as uefi-x64.grub.esp
-    _run_once _make_bootmode_uefi-x64.grub.esp
-
-    # Prepare configuration files
-    _run_once _make_common_bootmode_grub_cfg
-
-    # Additionally set up systemd-boot in ISO 9660. This allows creating a medium for the live environment by using
-    # manual partitioning and simply copying the ISO 9660 file system contents.
-    # This is not related to El Torito booting and no firmware uses these files.
-    _msg_info "Preparing an /EFI directory for the ISO 9660 file system..."
-    install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
-
-    # Copy GRUB EFI binary to the default/fallback boot path
-    install -m 0644 -- "${work_dir}/BOOTx64.EFI" "${isofs_dir}/EFI/BOOT/BOOTx64.EFI"
-
-    # Copy GRUB files
-    _run_once _make_common_bootmode_grub_copy_to_isofs
-
-    # edk2-shell based UEFI shell
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ]]; then
-        install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" "${isofs_dir}/shellx64.efi"
-    fi
-
-    _msg_info "Done!"
+    return 1
 }
 
-# Prepare systemd-boot for booting when written to a disk (isohybrid)
-_make_bootmode_uefi-x64.systemd-boot.esp() {
-    local _file efiboot_imgsize
-    local _available_ucodes=()
-    _msg_info "Setting up systemd-boot for UEFI booting..."
-
-    for _file in "${ucodes[@]}"; do
-        if [[ -e "${pacstrap_dir}/boot/${_file}" ]]; then
-            _available_ucodes+=("${pacstrap_dir}/boot/${_file}")
-        fi
-    done
-    # Calculate the required FAT image size in bytes
-    efiboot_files+=("${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-                    "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi"
-                    "${profile}/efiboot/"
-                    "${pacstrap_dir}/boot/vmlinuz-"*
-                    "${pacstrap_dir}/boot/initramfs-"*".img"
-                    "${_available_ucodes[@]}")
-    efiboot_imgsize="$(du -bcs -- "${efiboot_files[@]}" \
-        2>/dev/null | awk 'END { print $1 }')"
-    # Create a FAT image for the EFI system partition
-    _make_efibootimg "$efiboot_imgsize"
+# Copy UEFI-architecture-specific files
+_make_common_bootmode_uefi.systemd-boot_copy_files() {
+    local target_arch="$1"
 
     # Copy systemd-boot EFI binary to the default/fallback boot path
     mcopy -i "${efibootimg}" \
-        "${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi" ::/EFI/BOOT/BOOTx64.EFI
+        "${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-boot${target_arch,,}.efi" "::/EFI/BOOT/BOOT${target_arch}.EFI"
+    install -m 0644 -- "${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-boot${target_arch,,}.efi" \
+        "${isofs_dir}/EFI/BOOT/BOOT${target_arch}.EFI"
 
-    # Copy systemd-boot configuration files
-    mmd -i "${efibootimg}" ::/loader ::/loader/entries
-    mcopy -i "${efibootimg}" "${profile}/efiboot/loader/loader.conf" ::/loader/
+    # edk2-shell based UEFI shell
+    # shell*.efi is picked up automatically when on /
+    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/${target_arch,,}/Shell_Full.efi" ]]; then
+        mcopy -i "${efibootimg}" \
+            "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" "::/shell${target_arch,,}.efi"
+        install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/${target_arch,,}/Shell_Full.efi" \
+            "${isofs_dir}/shell${target_arch,,}.efi"
+    fi
+
+    # Copy Memtest86+
+    # Only the x64 binary is built. See https://gitlab.archlinux.org/archlinux/packaging/packages/memtest86plus/-/merge_requests/2
+    if [[ "$target_arch" == 'x64' ]]; then
+        if [[ -e "${pacstrap_dir}/boot/memtest86+/memtest.efi" ]]; then
+            mmd -i "${efibootimg}" ::/boot ::/boot/memtest86+
+            mcopy -i "${efibootimg}" \
+                "${pacstrap_dir}/boot/memtest86+/memtest.efi" ::/boot/memtest86+/
+            mcopy -i "${efibootimg}" \
+                "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt" ::/boot/memtest86+/LICENSE
+            install -d -m 0755 -- "${isofs_dir}/boot/memtest86+/"
+            install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest.efi" "${isofs_dir}/boot/memtest86+/memtest.efi"
+            install -m 0644 -- "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt" "${isofs_dir}/boot/memtest86+/LICENSE"
+        fi
+    fi
+}
+
+# Prepare systemd-boot
+_make_bootmode_uefi.systemd-boot() {
+    local _conf _file _available_ucodes=()
+    local -i efiboot_imgsize
+
+    _msg_info "Setting up systemd-boot for UEFI booting..."
+
+    # Prepare configuration files
+    install -d -m 0755 -- "${work_dir}/loader" "${work_dir}/loader/entries"
+    install -m 0644 -- "${profile}/efiboot/loader/loader.conf" "${work_dir}/loader"
     for _conf in "${profile}/efiboot/loader/entries/"*".conf"; do
         sed "s|%ARCHISO_LABEL%|${iso_label}|g;
              s|%ARCHISO_UUID%|${iso_uuid}|g;
              s|%INSTALL_DIR%|${install_dir}|g;
              s|%ARCH%|${arch}|g" \
-            "${_conf}" | mcopy -i "${efibootimg}" - "::/loader/entries/${_conf##*/}"
+            "${_conf}" >"${work_dir}/loader/entries/${_conf##*/}"
     done
 
-    # shellx64.efi is picked up automatically when on /
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ]]; then
-        mcopy -i "${efibootimg}" \
-            "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ::/shellx64.efi
+    if (( need_external_ucodes )); then
+        for _file in "${ucodes[@]}"; do
+            if [[ -e "${pacstrap_dir}/boot/${_file}" ]]; then
+                _available_ucodes+=("${pacstrap_dir}/boot/${_file}")
+            fi
+        done
     fi
+    # Calculate the required FAT image size in bytes
+    efiboot_files+=("${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-boot${uefi_arch[$arch],,}.efi"
+                    "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi"
+                    "${work_dir}/loader/"
+                    "${pacstrap_dir}/boot/vmlinuz-"*
+                    "${pacstrap_dir}/boot/initramfs-"*".img"
+                    "${_available_ucodes[@]}")
 
-    # Copy kernel and initramfs to FAT image.
-    # systemd-boot can only access files from the EFI system partition it was launched from.
-    _make_boot_on_fat
-
-    _msg_info "Done! systemd-boot set up for UEFI booting successfully."
-}
-
-# Prepare systemd-boot for El Torito booting
-_make_bootmode_uefi-x64.systemd-boot.eltorito() {
-    # El Torito UEFI boot requires an image containing the EFI system partition.
-    # uefi-x64.systemd-boot.eltorito has the same requirements as uefi-x64.systemd-boot.esp
-    _run_once _make_bootmode_uefi-x64.systemd-boot.esp
+    # Files specific to x86_64: IA32 UEFI binaries for mixed mode booting, memtest86+
+    if [[ "$arch" == 'x86_64' ]]; then
+        efiboot_files+=("${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-bootia32.efi"
+                        "${pacstrap_dir}/usr/share/edk2-shell/ia32/Shell_Full.efi"
+                        "${pacstrap_dir}/boot/memtest86+/memtest.efi"
+                        "${pacstrap_dir}/usr/share/licenses/spdx/GPL-2.0-only.txt")
+    fi
+    efiboot_imgsize="$(du -bcs -- "${efiboot_files[@]}" 2>/dev/null | awk 'END { print $1 }')"
+    # Create a FAT image for the EFI system partition
+    _make_efibootimg "$efiboot_imgsize"
 
     # Additionally set up systemd-boot in ISO 9660. This allows creating a medium for the live environment by using
     # manual partitioning and simply copying the ISO 9660 file system contents.
     # This is not related to El Torito booting and no firmware uses these files.
-    _msg_info "Preparing an /EFI directory for the ISO 9660 file system..."
     install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
 
-    # Copy systemd-boot EFI binary to the default/fallback boot path
-    install -m 0644 -- "${pacstrap_dir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi" \
-        "${isofs_dir}/EFI/BOOT/BOOTx64.EFI"
-
     # Copy systemd-boot configuration files
-    install -d -m 0755 -- "${isofs_dir}/loader/entries"
-    install -m 0644 -- "${profile}/efiboot/loader/loader.conf" "${isofs_dir}/loader/"
-    for _conf in "${profile}/efiboot/loader/entries/"*".conf"; do
-        sed "s|%ARCHISO_LABEL%|${iso_label}|g;
-             s|%INSTALL_DIR%|${install_dir}|g;
-             s|%ARCH%|${arch}|g" \
-            "${_conf}" > "${isofs_dir}/loader/entries/${_conf##*/}"
-    done
+    mcopy -i "${efibootimg}" -s "${work_dir}/loader" ::/
+    cp -r --remove-destination -- "${work_dir}/loader" "${isofs_dir}/"
 
-    # edk2-shell based UEFI shell
-    # shellx64.efi is picked up automatically when on /
-    if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" ]]; then
-        install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/x64/Shell_Full.efi" "${isofs_dir}/shellx64.efi"
+    # Copy EFI binaries and related files
+    _make_common_bootmode_uefi.systemd-boot_copy_files "${uefi_arch[$arch]}"
+    # Set up mixed mode booting for x86_64 systems with IA32 UEFI
+    if [[ "$arch" == 'x86_64' ]]; then
+        _make_common_bootmode_uefi.systemd-boot_copy_files 'IA32'
     fi
 
-    _msg_info "Done!"
+    # Copy kernel and initramfs to FAT image.
+    # systemd-boot can only access files from the EFI system partition it was launched from.
+    _run_once _make_boot_on_fat
+
+    _msg_info "Done! systemd-boot set up for UEFI booting successfully."
+}
+# Deprecated boot modes
+_make_bootmode_uefi-x64.systemd-boot.eltorito() {
+    return 1
+}
+_make_bootmode_uefi-x64.systemd-boot.esp() {
+    return 1
+}
+_make_bootmode_uefi-ia32.systemd-boot.eltorito() {
+    return 1
+}
+_make_bootmode_uefi-ia32.systemd-boot.esp() {
+    return 1
 }
 
-_validate_requirements_bootmode_bios.syslinux.mbr() {
-    # bios.syslinux.mbr requires bios.syslinux.eltorito
-    # shellcheck disable=SC2076
-    if [[ ! " ${bootmodes[*]} " =~ ' bios.syslinux.eltorito ' ]]; then
+_validate_requirements_bootmode_bios.syslinux() {
+    # Check if the architecture supports BIOS booting
+    if [[ "$arch" != @('x86_64'|'i686') ]]; then
         (( validation_error=validation_error+1 ))
-        _msg_error "Using 'bios.syslinux.mbr' boot mode without 'bios.syslinux.eltorito' is not supported." 0
+        _msg_error "Validating '${bootmode}': BIOS boot modes are not supported on the '${arch}' architecture!" 0
     fi
 
     # Check if the syslinux package is in the package list
@@ -938,22 +945,52 @@ _validate_requirements_bootmode_bios.syslinux.eltorito() {
     _validate_requirements_bootmode_bios.syslinux.mbr
 }
 
-_validate_requirements_bootmode_uefi-x64.systemd-boot.esp() {
+_validate_requirements_bootmode_bios.syslinux.mbr() {
+    _msg_warning "The '${bootmode}' boot mode is deprecated. Use 'bios.syslinux' instead."
+    bootmodes=("${bootmodes[@]/${bootmode}}")
     # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.grub.esp ' ]]; then
-        _msg_error "Validating '${bootmode}': cannot be used with bootmode uefi-x64.grub.esp!" 0
+    if [[ ! " ${bootmodes[*]} " =~ ' bios.syslinux ' ]]; then
+        bootmodes+=('bios.syslinux')
+        _validate_requirements_bootmode_bios.syslinux
+    fi
+}
+
+_validate_common_requirements_bootmode_uefi() {
+    # Check if the architecture supports UEFI
+    if [[ ! -v uefi_arch["$arch"] ]]; then
+        (( validation_error=validation_error+1 ))
+        _msg_error "Validating '${bootmode}': UEFI boot modes are not supported on the '${arch}' architecture!" 0
     fi
 
     # Check if mkfs.fat is available
-    if ! command -v mkfs.fat &> /dev/null; then
+    if ! command -v mkfs.fat &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${bootmode}': mkfs.fat is not available on this host. Install 'dosfstools'!" 0
     fi
 
     # Check if mmd and mcopy are available
-    if ! { command -v mmd &> /dev/null && command -v mcopy &> /dev/null; }; then
+    if ! { command -v mmd &>/dev/null && command -v mcopy &>/dev/null; }; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${bootmode}': mmd and/or mcopy are not available on this host. Install 'mtools'!" 0
+    fi
+
+    # Check for optional packages
+    # shellcheck disable=SC2076
+    if [[ ! " ${pkg_list[*]} " =~ ' edk2-shell ' ]]; then
+        _msg_info "'edk2-shell' is not in the package list. The ISO will not contain a bootable UEFI shell."
+    fi
+    # shellcheck disable=SC2076
+    if [[ "$arch" == 'x86_64'  && ! " ${pkg_list[*]} " =~ ' memtest86+-efi ' ]]; then
+        _msg_info "Validating '${bootmode}': 'memtest86+-efi' is not in the package list. Memory testing will not be available from the UEFI boot loader."
+    fi
+}
+
+_validate_requirements_bootmode_uefi.systemd-boot() {
+    _validate_common_requirements_bootmode_uefi
+
+    # shellcheck disable=SC2076
+    if [[ " ${bootmodes[*]} " =~ ' uefi.grub ' ]]; then
+        _msg_error "Validating '${bootmode}': cannot be used with the 'uefi.grub' bootmode!" 0
     fi
 
     # Check if systemd-boot configuration files exist
@@ -975,67 +1012,43 @@ _validate_requirements_bootmode_uefi-x64.systemd-boot.esp() {
             fi
         done
     fi
+}
 
-    # Check for optional packages
+_validate_requirements_bootmode_uefi-x64.systemd-boot.esp() {
+    _msg_warning "The '${bootmode}' boot mode is deprecated. Use 'uefi.systemd-boot' instead."
+    bootmodes=("${bootmodes[@]/${bootmode}}")
     # shellcheck disable=SC2076
-    if [[ ! " ${pkg_list[*]} " =~ ' edk2-shell ' ]]; then
-        _msg_info "'edk2-shell' is not in the package list. The ISO will not contain a bootable UEFI shell."
+    if [[ ! " ${bootmodes[*]} " =~ ' uefi.systemd-boot ' ]]; then
+        bootmodes+=('uefi.systemd-boot')
+        _validate_requirements_bootmode_uefi.systemd-boot
     fi
 }
 
 _validate_requirements_bootmode_uefi-x64.systemd-boot.eltorito() {
-    # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.grub.eltorito ' ]]; then
-        _msg_error "Validating '${bootmode}': cannot be used with bootmode uefi-x64.grub.eltorito!" 0
-    fi
-
     # uefi-x64.systemd-boot.eltorito has the exact same requirements as uefi-x64.systemd-boot.esp
     _validate_requirements_bootmode_uefi-x64.systemd-boot.esp
 }
-
-_validate_requirements_bootmode_uefi-ia32.grub.esp() {
-    # Check if GRUB is available
-    if ! command -v grub-mkstandalone &> /dev/null; then
-        (( validation_error=validation_error+1 ))
-        _msg_error "Validating '${bootmode}': grub-install is not available on this host. Install 'grub'!" 0
-    fi
-
-    # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.esp ' ]]; then
-        _validate_requirements_bootmode_uefi-x64.systemd-boot.esp
-    elif [[ " ${bootmodes[*]} " =~ ' uefi-x64.grub.esp ' ]]; then
-        _validate_requirements_bootmode_uefi-x64.grub.esp
-    else
-        _msg_error "Validating '${bootmode}': requires one of bootmode uefi-x64.systemd-boot.esp or uefi-x64.grub.esp" 0
-    fi
+_validate_requirements_bootmode_uefi-ia32.systemd-boot.esp() {
+    # uefi-ia32.systemd-boot.esp has the exact same requirements as uefi-x64.systemd-boot.esp
+    _validate_requirements_bootmode_uefi-x64.systemd-boot.esp
+}
+_validate_requirements_bootmode_uefi-ia32.systemd-boot.eltorito() {
+    # uefi-ia32.systemd-boot.eltorito has the exact same requirements as uefi-x64.systemd-boot.esp
+    _validate_requirements_bootmode_uefi-x64.systemd-boot.esp
 }
 
-_validate_requirements_bootmode_uefi-ia32.grub.eltorito() {
-    # uefi-ia32.grub.eltorito has the exact same requirements as uefi-ia32.grub.esp
-    _validate_requirements_bootmode_uefi-ia32.grub.esp
-}
+_validate_requirements_bootmode_uefi.grub() {
+    _validate_common_requirements_bootmode_uefi
 
-_validate_requirements_bootmode_uefi-x64.grub.esp() {
     # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.esp ' ]]; then
-        _msg_error "Validating '${bootmode}': cannot be used with bootmode uefi-x64.systemd-boot.esp!" 0
+    if [[ " ${bootmodes[*]} " =~ ' uefi.systemd-boot ' ]]; then
+        _msg_error "Validating '${bootmode}': cannot be used with the 'uefi.systemd-boot' bootmode!" 0
     fi
 
     # Check if GRUB is available
-    if ! command -v grub-mkstandalone &> /dev/null; then
+    if ! command -v grub-mkstandalone &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${bootmode}': grub-install is not available on this host. Install 'grub'!" 0
-    fi
-
-        # Check if mkfs.fat is available
-    if ! command -v mkfs.fat &> /dev/null; then
-        (( validation_error=validation_error+1 ))
-        _msg_error "Validating '${bootmode}': mkfs.fat is not available on this host. Install 'dosfstools'!" 0
-    fi
-
-    # Check if mmd and mcopy are available
-    if ! { command -v mmd &> /dev/null && command -v mcopy &> /dev/null; }; then
-        _msg_error "Validating '${bootmode}': mmd and/or mcopy are not available on this host. Install 'mtools'!" 0
     fi
 
     # Check if GRUB configuration files exist
@@ -1057,23 +1070,26 @@ _validate_requirements_bootmode_uefi-x64.grub.esp() {
             fi
         done
     fi
-
-    # Check for optional packages
-    # shellcheck disable=SC2076
-    if [[ ! " ${pkg_list[*]} " =~ ' edk2-shell ' ]]; then
-        _msg_info "'edk2-shell' is not in the package list. The ISO will not contain a bootable UEFI shell."
-    fi
-    # shellcheck disable=SC2076
-    if [[ ! " ${pkg_list[*]} " =~ ' memtest86+-efi ' ]]; then
-        _msg_info "Validating '${bootmode}': 'memtest86+-efi' is not in the package list. Memory testing will not be available from GRUB."
-    fi
 }
 
-_validate_requirements_bootmode_uefi-x64.grub.eltorito() {
+_validate_requirements_bootmode_uefi-ia32.grub.esp() {
+    # uefi-ia32.grub.esp has the exact same requirements as uefi-x64.grub.esp
+    _validate_requirements_bootmode_uefi-x64.grub.esp
+}
+_validate_requirements_bootmode_uefi-ia32.grub.eltorito() {
+    # uefi-ia32.grub.eltorito has the exact same requirements as uefi-x64.grub.esp
+    _validate_requirements_bootmode_uefi-x64.grub.esp
+}
+_validate_requirements_bootmode_uefi-x64.grub.esp() {
+    _msg_warning "The '${bootmode}' boot mode is deprecated. Use 'uefi.grub' instead."
+    bootmodes=("${bootmodes[@]/${bootmode}}")
     # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.eltorito ' ]]; then
-        _msg_error "Validating '${bootmode}': cannot be used with bootmode uefi-x64.systemd-boot.eltorito!" 0
+    if [[ ! " ${bootmodes[*]} " =~ ' uefi.grub ' ]]; then
+        bootmodes+=('uefi.grub')
+        _validate_requirements_bootmode_uefi.grub
     fi
+}
+_validate_requirements_bootmode_uefi-x64.grub.eltorito() {
     # uefi-x64.grub.eltorito has the exact same requirements as uefi-x64.grub.esp
     _validate_requirements_bootmode_uefi-x64.grub.esp
 }
@@ -1163,14 +1179,14 @@ _sign_netboot_artifacts() {
 }
 
 _validate_requirements_airootfs_image_type_squashfs() {
-    if ! command -v mksquashfs &> /dev/null; then
+    if ! command -v mksquashfs &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${airootfs_image_type}': mksquashfs is not available on this host. Install 'squashfs-tools'!" 0
     fi
 }
 
 _validate_requirements_airootfs_image_type_ext4+squashfs() {
-    if ! { command -v mkfs.ext4 &> /dev/null && command -v tune2fs &> /dev/null; }; then
+    if ! { command -v mkfs.ext4 &>/dev/null && command -v tune2fs &>/dev/null; }; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${airootfs_image_type}': mkfs.ext4 and/or tune2fs is not available on this host. Install 'e2fsprogs'!" 0
     fi
@@ -1178,22 +1194,22 @@ _validate_requirements_airootfs_image_type_ext4+squashfs() {
 }
 
 _validate_requirements_airootfs_image_type_erofs() {
-    if ! command -v mkfs.erofs &> /dev/null; then
+    if ! command -v mkfs.erofs &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating '${airootfs_image_type}': mkfs.erofs is not available on this host. Install 'erofs-utils'!" 0
     fi
 }
 
 _validate_common_requirements_buildmode_all() {
-    if ! command -v pacman &> /dev/null; then
+    if ! command -v pacman &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating build mode '${_buildmode}': pacman is not available on this host. Install 'pacman'!" 0
     fi
-    if ! command -v find &> /dev/null; then
+    if ! command -v find &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating build mode '${_buildmode}': find is not available on this host. Install 'findutils'!" 0
     fi
-    if ! command -v gzip &> /dev/null; then
+    if ! command -v gzip &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating build mode '${_buildmode}': gzip is not available on this host. Install 'gzip'!" 0
     fi
@@ -1217,9 +1233,35 @@ _validate_requirements_buildmode_bootstrap() {
     fi
 
     _validate_common_requirements_buildmode_all
-    if ! command -v bsdtar &> /dev/null; then
+    if ! command -v bsdtar &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating build mode '${_buildmode}': bsdtar is not available on this host. Install 'libarchive'!" 0
+    fi
+
+    # Check if the compressor is installed
+    if (( ${#bootstrap_tarball_compression[@]} )); then
+        case "${bootstrap_tarball_compression[0]}" in
+            'bzip'|'gzip'|'lrzip'|'lzip'|'lzop'|'xz'|'zstd'|'zstdmt')
+                if ! command -v "${bootstrap_tarball_compression[0]}" &>/dev/null; then
+                    (( validation_error=validation_error+1 ))
+                    _msg_error "Validating build mode '${_buildmode}': '${bootstrap_tarball_compression[0]}' is not available on this host. Install '${bootstrap_tarball_compression[0]/zstdmt/zstd}'!" 0
+                fi
+                ;;
+            'cat')
+                if ! command -v cat &>/dev/null; then
+                    (( validation_error=validation_error+1 ))
+                    _msg_error "Validating build mode '${_buildmode}': 'cat' is not available on this host. Install 'coreutils'!" 0
+                fi
+                if (( ${#bootstrap_tarball_compression[@]} > 1 )); then
+                    (( validation_error=validation_error+1 ))
+                    _msg_error "Validating build mode '${_buildmode}': 'cat' compression does not accept arguments!" 0
+                fi
+                ;;
+            *)
+                (( validation_error=validation_error+1 ))
+                _msg_error "Validating build mode '${_buildmode}': '${bootstrap_tarball_compression[0]}' is not a supported compression method!" 0
+                ;;
+        esac
     fi
 }
 
@@ -1254,15 +1296,15 @@ _validate_common_requirements_buildmode_iso_netboot() {
             _msg_error "Two certificates are required for codesigning netboot artifacts, but '${cert_list[*]}' is provided." 0
         fi
 
-        if ! command -v openssl &> /dev/null; then
+        if ! command -v openssl &>/dev/null; then
             (( validation_error=validation_error+1 ))
             _msg_error "Validating build mode '${_buildmode}': openssl is not available on this host. Install 'openssl'!" 0
         fi
     fi
 
     # Check if the specified airootfs_image_type is supported
-    if typeset -f "_mkairootfs_${airootfs_image_type}" &> /dev/null; then
-        if typeset -f "_validate_requirements_airootfs_image_type_${airootfs_image_type}" &> /dev/null; then
+    if typeset -f "_mkairootfs_${airootfs_image_type}" &>/dev/null; then
+        if typeset -f "_validate_requirements_airootfs_image_type_${airootfs_image_type}" &>/dev/null; then
             "_validate_requirements_airootfs_image_type_${airootfs_image_type}"
         else
             _msg_warning "Function '_validate_requirements_airootfs_image_type_${airootfs_image_type}' does not exist. Validating the requirements of '${airootfs_image_type}' airootfs image type will not be possible."
@@ -1282,8 +1324,8 @@ _validate_requirements_buildmode_iso() {
         _msg_error "No boot modes specified in '${profile}/profiledef.sh'." 0
     fi
     for bootmode in "${bootmodes[@]}"; do
-        if typeset -f "_make_bootmode_${bootmode}" &> /dev/null; then
-            if typeset -f "_validate_requirements_bootmode_${bootmode}" &> /dev/null; then
+        if typeset -f "_make_bootmode_${bootmode}" &>/dev/null; then
+            if typeset -f "_validate_requirements_bootmode_${bootmode}" &>/dev/null; then
                 "_validate_requirements_bootmode_${bootmode}"
             else
                 _msg_warning "Function '_validate_requirements_bootmode_${bootmode}' does not exist. Validating the requirements of '${bootmode}' boot mode will not be possible."
@@ -1294,7 +1336,7 @@ _validate_requirements_buildmode_iso() {
         fi
     done
 
-    if ! command -v awk &> /dev/null; then
+    if ! command -v awk &>/dev/null; then
         (( validation_error=validation_error+1 ))
         _msg_error "Validating build mode '${_buildmode}': awk is not available on this host. Install 'awk'!" 0
     fi
@@ -1305,8 +1347,8 @@ _validate_requirements_buildmode_netboot() {
     _validate_common_requirements_buildmode_all
 }
 
-# SYSLINUX El Torito
-_add_xorrisofs_options_bios.syslinux.eltorito() {
+# SYSLINUX MBR (isohybrid) and El Torito
+_add_xorrisofs_options_bios.syslinux() {
     xorrisofs_options+=(
         # El Torito boot image for x86 BIOS
         '-eltorito-boot' 'boot/syslinux/isolinux.bin'
@@ -1314,12 +1356,6 @@ _add_xorrisofs_options_bios.syslinux.eltorito() {
         '-eltorito-catalog' 'boot/syslinux/boot.cat'
         # Required options to boot with ISOLINUX
         '-no-emul-boot' '-boot-load-size' '4' '-boot-info-table'
-    )
-}
-
-# SYSLINUX MBR (isohybrid)
-_add_xorrisofs_options_bios.syslinux.mbr() {
-    xorrisofs_options+=(
         # SYSLINUX MBR bootstrap code; does not work without "-eltorito-boot syslinux/isolinux.bin"
         '-isohybrid-mbr' "${isofs_dir}/boot/syslinux/isohdpfx.bin"
         # When GPT is used, create an additional partition in the MBR (besides 0xEE) for sectors 0–1 (MBR
@@ -1334,27 +1370,8 @@ _add_xorrisofs_options_bios.syslinux.mbr() {
     )
 }
 
-# GRUB in an attached EFI system partition
-_add_xorrisofs_options_uefi-ia32.grub.esp() {
-    # TODO: how does the bootmodes systemd-boot vs x64.grub affect ${bootmodes[*]} tests in _add_xorrisofs_options_uefi-x64.systemd-boot.esp etc?
-    # shellcheck disable=SC2076
-    if [[ ! " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.esp ' && ! " ${bootmodes[*]} " =~ ' uefi-x64.grub.esp ' ]]; then
-        # _add_xorrisofs_options_uefi-x64.systemd-boot.esp
-        _add_xorrisofs_options_uefi-x64.grub.esp
-    fi
-}
-
-# GRUB via El Torito
-_add_xorrisofs_options_uefi-ia32.grub.eltorito() {
-    # shellcheck disable=SC2076
-    if [[ ! " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.eltorito ' && ! " ${bootmodes[*]} " =~ ' uefi-x64.grub.eltorito ' ]]; then
-        # _add_xorrisofs_options_uefi-x64.systemd-boot.eltorito
-        _add_xorrisofs_options_uefi-x64.grub.eltorito
-    fi
-}
-
-# systemd-boot in an attached EFI system partition
-_add_xorrisofs_options_uefi-x64.systemd-boot.esp() {
+# UEFI boot loader in an attached EFI system partition and El Torito
+_add_common_xorrisofs_options_uefi() {
     # Move the first partition away from the start of the ISO, otherwise the GPT will not be valid and ISO 9660
     # partition will not be mountable
     # shellcheck disable=SC2076
@@ -1363,149 +1380,56 @@ _add_xorrisofs_options_uefi-x64.systemd-boot.esp() {
     xorrisofs_options+=('-append_partition' '2' 'C12A7328-F81F-11D2-BA4B-00A0C93EC93B' "${efibootimg}")
     # Ensure GPT is used as some systems do not support UEFI booting without it
     # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' bios.syslinux.mbr ' ]]; then
-        # A valid GPT prevents BIOS booting on some systems, instead use an invalid GPT (without a protective MBR).
-        # The attached partition will have the EFI system partition type code in MBR, but in the invalid GPT it will
-        # have a Microsoft basic partition type code.
-        if [[ ! " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.eltorito ' &&  ! " ${bootmodes[*]} " =~ ' uefi-ia32.grub.eltorito ' ]]; then
-            # If '-isohybrid-gpt-basdat' is specified before '-e', then the appended EFI system partition will have the
-            # EFI system partition type ID/GUID in both MBR and GPT. If '-isohybrid-gpt-basdat' is specified after '-e',
-            # the appended EFI system partition will have the Microsoft basic data type GUID in GPT.
-            if [[ ! " ${xorrisofs_options[*]} " =~ ' -isohybrid-gpt-basdat ' ]]; then
-                xorrisofs_options+=('-isohybrid-gpt-basdat')
-            fi
-        fi
-    else
+    if [[ ! " ${bootmodes[*]} " =~ ' bios.syslinux ' ]]; then
         # Use valid GPT if BIOS booting support will not be required
         xorrisofs_options+=('-appended_part_as_gpt')
-    fi
-}
-
-# systemd-boot via El Torito
-_add_xorrisofs_options_uefi-x64.systemd-boot.eltorito() {
-    # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.systemd-boot.esp ' || " ${bootmodes[*]} " =~ ' uefi-ia32.grub.esp ' ]]; then
-        # systemd-boot in an attached EFI system partition via El Torito
-        xorrisofs_options+=(
-            # Start a new El Torito boot entry for UEFI
-            '-eltorito-alt-boot'
-            # Set the second partition as the El Torito UEFI boot image
-            '-e' '--interval:appended_partition_2:all::'
-            # Boot image is not emulating floppy or hard disk; required for all known boot loaders
-            '-no-emul-boot'
-        )
-        # A valid GPT prevents BIOS booting on some systems, use an invalid GPT instead.
-        if [[ " ${bootmodes[*]} " =~ ' bios.syslinux.mbr ' ]]; then
-            # If '-isohybrid-gpt-basdat' is specified before '-e', then the appended EFI system partition will have the
-            # EFI system partition type ID/GUID in both MBR and GPT. If '-isohybrid-gpt-basdat' is specified after '-e',
-            # the appended EFI system partition will have the Microsoft basic data type GUID in GPT.
-            if [[ ! " ${xorrisofs_options[*]} " =~ ' -isohybrid-gpt-basdat ' ]]; then
-                xorrisofs_options+=('-isohybrid-gpt-basdat')
-            fi
-        fi
     else
-        # The ISO will not contain a GPT partition table, so to be able to reference efiboot.img, place it as a
-        # file inside the ISO 9660 file system
-        install -d -m 0755 -- "${isofs_dir}/EFI/archiso"
-        cp -a -- "${efibootimg}" "${isofs_dir}/EFI/archiso/efiboot.img"
-        # systemd-boot in an embedded efiboot.img via El Torito
-        xorrisofs_options+=(
-            # Start a new El Torito boot entry for UEFI
-            '-eltorito-alt-boot'
-            # Set efiboot.img as the El Torito UEFI boot image
-            '-e' 'EFI/archiso/efiboot.img'
-            # Boot image is not emulating floppy or hard disk; required for all known boot loaders
-            '-no-emul-boot'
-        )
+        # A valid GPT prevents BIOS booting on some systems, use an invalid GPT instead.
+        # If '-isohybrid-gpt-basdat' is specified before '-e', then the appended EFI system partition will have the
+        # EFI system partition type ID/GUID in both MBR and GPT. If '-isohybrid-gpt-basdat' is specified after '-e',
+        # the appended EFI system partition will have the Microsoft basic data type GUID in GPT.
+        xorrisofs_options+=('-isohybrid-gpt-basdat')
     fi
-    # Specify where to save the El Torito boot catalog file in case it is not already set by bios.syslinux.eltorito
+    # systemd-boot in an attached EFI system partition via El Torito
+    xorrisofs_options+=(
+        # Start a new El Torito boot entry for UEFI
+        '-eltorito-alt-boot'
+        # Set the second partition as the El Torito UEFI boot image
+        '-e' '--interval:appended_partition_2:all::'
+        # Boot image is not emulating floppy or hard disk; required for all known boot loaders
+        '-no-emul-boot'
+    )
+
+    # Specify where to save the El Torito boot catalog file in case it is not already set by bios.syslinux
     # shellcheck disable=SC2076
     [[ " ${bootmodes[*]} " =~ ' bios.' ]] || xorrisofs_options+=('-eltorito-catalog' 'EFI/boot.cat')
 }
 
-# GRUB in an attached EFI system partition.
-# Same as _add_xorrisofs_options_uefi-x64.systemd-boot.esp.
-_add_xorrisofs_options_uefi-x64.grub.esp() {
-    # Move the first partition away from the start of the ISO, otherwise the GPT will not be valid and ISO 9660
-    # partition will not be mountable
-    # shellcheck disable=SC2076
-    [[ " ${xorrisofs_options[*]} " =~ ' -partition_offset ' ]] || xorrisofs_options+=('-partition_offset' '16')
-    # Attach efiboot.img as a second partition and set its partition type to "EFI system partition"
-    xorrisofs_options+=('-append_partition' '2' 'C12A7328-F81F-11D2-BA4B-00A0C93EC93B' "${efibootimg}")
-    # Ensure GPT is used as some systems do not support UEFI booting without it
-    # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' bios.syslinux.mbr ' ]]; then
-        # A valid GPT prevents BIOS booting on some systems, instead use an invalid GPT (without a protective MBR).
-        # The attached partition will have the EFI system partition type code in MBR, but in the invalid GPT it will
-        # have a Microsoft basic partition type code.
-        if [[ ! " ${bootmodes[*]} " =~ ' uefi-x64.grub.eltorito ' &&  ! " ${bootmodes[*]} " =~ ' uefi-ia32.grub.eltorito ' ]]; then
-            # If '-isohybrid-gpt-basdat' is specified before '-e', then the appended EFI system partition will have the
-            # EFI system partition type ID/GUID in both MBR and GPT. If '-isohybrid-gpt-basdat' is specified after '-e',
-            # the appended EFI system partition will have the Microsoft basic data type GUID in GPT.
-            if [[ ! " ${xorrisofs_options[*]} " =~ ' -isohybrid-gpt-basdat ' ]]; then
-                xorrisofs_options+=('-isohybrid-gpt-basdat')
-            fi
-        fi
-    else
-        # Use valid GPT if BIOS booting support will not be required
-        xorrisofs_options+=('-appended_part_as_gpt')
-    fi
+# systemd-boot in an attached EFI system partition and El Torito
+_add_xorrisofs_options_uefi.systemd-boot() {
+    _add_common_xorrisofs_options_uefi
 }
 
-# GRUB via El Torito
-# Same as _add_xorrisofs_options_uefi-x64.systemd-boot.eltorito.
-_add_xorrisofs_options_uefi-x64.grub.eltorito() {
-    # shellcheck disable=SC2076
-    if [[ " ${bootmodes[*]} " =~ ' uefi-x64.grub.esp ' || " ${bootmodes[*]} " =~ ' uefi-ia32.grub.esp ' ]]; then
-        # grub in an attached EFI system partition via El Torito
-        xorrisofs_options+=(
-            # Start a new El Torito boot entry for UEFI
-            '-eltorito-alt-boot'
-            # Set the second partition as the El Torito UEFI boot image
-            '-e' '--interval:appended_partition_2:all::'
-            # Boot image is not emulating floppy or hard disk; required for all known boot loaders
-            '-no-emul-boot'
-        )
-        # A valid GPT prevents BIOS booting on some systems, use an invalid GPT instead.
-        if [[ " ${bootmodes[*]} " =~ ' bios.syslinux.mbr ' ]]; then
-            # If '-isohybrid-gpt-basdat' is specified before '-e', then the appended EFI system partition will have the
-            # EFI system partition type ID/GUID in both MBR and GPT. If '-isohybrid-gpt-basdat' is specified after '-e',
-            # the appended EFI system partition will have the Microsoft basic data type GUID in GPT.
-            if [[ ! " ${xorrisofs_options[*]} " =~ ' -isohybrid-gpt-basdat ' ]]; then
-                xorrisofs_options+=('-isohybrid-gpt-basdat')
-            fi
-        fi
-    else
-        # The ISO will not contain a GPT partition table, so to be able to reference efiboot.img, place it as a
-        # file inside the ISO 9660 file system
-        install -d -m 0755 -- "${isofs_dir}/EFI/archiso"
-        cp -a -- "${efibootimg}" "${isofs_dir}/EFI/archiso/efiboot.img"
-        # grub in an embedded efiboot.img via El Torito
-        xorrisofs_options+=(
-            # Start a new El Torito boot entry for UEFI
-            '-eltorito-alt-boot'
-            # Set efiboot.img as the El Torito UEFI boot image
-            '-e' 'EFI/archiso/efiboot.img'
-            # Boot image is not emulating floppy or hard disk; required for all known boot loaders
-            '-no-emul-boot'
-        )
-    fi
-    # Specify where to save the El Torito boot catalog file in case it is not already set by bios.syslinux.eltorito
-    # shellcheck disable=SC2076
-    [[ " ${bootmodes[*]} " =~ ' bios.' ]] || xorrisofs_options+=('-eltorito-catalog' 'EFI/boot.cat')
+# GRUB in an attached EFI system partition and El Torito
+_add_xorrisofs_options_uefi.grub() {
+    _add_common_xorrisofs_options_uefi
 }
 
 # Build bootstrap image
 _build_bootstrap_image() {
-    local _bootstrap_parent
-    _bootstrap_parent="$(dirname -- "${pacstrap_dir}")"
+    # Set default tarball compression to uncompressed
+    if (( ! "${#bootstrap_tarball_compression[@]}" )); then
+        bootstrap_tarball_compression=('cat')
+    fi
 
     [[ -d "${out_dir}" ]] || install -d -- "${out_dir}"
 
-    cd -- "${_bootstrap_parent}"
+    cd -- "${bootstrap_parent}"
 
     _msg_info "Creating bootstrap image..."
-    bsdtar -cf - "root.${arch}" | gzip -cn9 > "${out_dir}/${image_name}"
+    rm -f -- "${out_dir:?}/${image_name:?}"
+    bsdtar -cf - "root.${arch}" "pkglist.${arch}.txt" 'version' \
+        | "${bootstrap_tarball_compression[@]}" >"${out_dir}/${image_name}"
     _msg_info "Done!"
     du -h -- "${out_dir}/${image_name}"
     cd -- "${OLDPWD}"
@@ -1513,38 +1437,55 @@ _build_bootstrap_image() {
 
 # Build ISO
 _build_iso_image() {
+    # Remove the pacstrap directory early to lower the maximum size of the working directory.
+    # The creation of the airootfs image has already been completed.
+    if (( rm_work_dir )); then
+        _msg_info 'Removing pacstrap directory...'
+        rm -rf -- "${work_dir:?}/${arch}/airootfs"
+    fi
+
     local xorriso_options=() xorrisofs_options=()
     local bootmode
 
     [[ -d "${out_dir}" ]] || install -d -- "${out_dir}"
 
+    # Do not read xorriso startup files to prevent interference and unintended behavior.
+    # For it to work, -no_rc must be the first argument passed to xorriso.
+    xorriso_options=('-no_rc')
+
+
     if [[ "${quiet}" == "y" ]]; then
         # The when xorriso is run in mkisofs compatibility mode (xorrisofs), the mkisofs option -quiet is interpreted
         # too late (e.g. messages about SOURCE_DATE_EPOCH still get shown).
         # Instead use native xorriso option to silence the output.
-        xorriso_options=('-report_about' 'SORRY' "${xorriso_options[@]}")
+        xorriso_options+=('-report_about' 'SORRY')
     fi
 
     # Add required xorrisofs options for each boot mode
     for bootmode in "${bootmodes[@]}"; do
-        typeset -f "_add_xorrisofs_options_${bootmode}" &> /dev/null && "_add_xorrisofs_options_${bootmode}"
+        typeset -f "_add_xorrisofs_options_${bootmode}" &>/dev/null && "_add_xorrisofs_options_${bootmode}"
     done
+
+    # Remove 300 KiB padding needed for CDs if the ISO exceeds the max size of a CD
+    if (( $(du -s --apparent-size -B1M "${isofs_dir}/" | awk '{ print $1 }') > 900 )); then
+        xorrisofs_options+=('-no-pad')
+    fi
 
     rm -f -- "${out_dir}/${image_name}"
     _msg_info "Creating ISO image..."
     xorriso "${xorriso_options[@]}" -as mkisofs \
-            -iso-level 3 \
-            -full-iso9660-filenames \
-            -joliet \
-            -joliet-long \
-            -rational-rock \
-            -volid "${iso_label}" \
-            -appid "${iso_application}" \
-            -publisher "${iso_publisher}" \
-            -preparer "prepared by ${app_name}" \
-            "${xorrisofs_options[@]}" \
-            -output "${out_dir}/${image_name}" \
-            "${isofs_dir}/"
+        -iso-level 3 \
+        -full-iso9660-filenames \
+        -joliet \
+        -joliet-long \
+        -rational-rock \
+        -volid "${iso_label}" \
+        -appid "${iso_application}" \
+        -publisher "${iso_publisher}" \
+        -preparer "prepared by ${app_name}" \
+        "${xorrisofs_options[@]}" \
+        -output "${out_dir}/${image_name}" \
+        "${isofs_dir}/"
     _msg_info "Done!"
     du -h -- "${out_dir}/${image_name}"
 }
@@ -1567,16 +1508,9 @@ _read_profile() {
 
         # Resolve paths of files that are expected to reside in the profile's directory
         [[ -n "$arch" ]] || arch="$(uname -m)"
-        [[ -n "$packages" ]] || packages="${profile}/packages.${arch}"
-        packages="$(realpath -- "${packages}")"
+        packages="$(realpath -- "${packages:-${profile}/packages.${arch}}")"
+        bootstrap_packages="$(realpath -- "${bootstrap_packages:-${profile}/bootstrap_packages.${arch}}")"
         pacman_conf="$(realpath -- "${pacman_conf}")"
-
-        # Resolve paths of files that may reside in the profile's directory
-        if [[ -z "$bootstrap_packages" ]] && [[ -e "${profile}/bootstrap_packages.${arch}" ]]; then
-            bootstrap_packages="${profile}/bootstrap_packages.${arch}"
-            bootstrap_packages="$(realpath -- "${bootstrap_packages}")"
-            pacman_conf="$(realpath -- "${pacman_conf}")"
-        fi
 
         cd -- "${OLDPWD}"
     fi
@@ -1604,8 +1538,8 @@ _validate_options() {
 
     # Check if the specified buildmodes are supported
     for _buildmode in "${buildmodes[@]}"; do
-        if typeset -f "_build_buildmode_${_buildmode}" &> /dev/null; then
-            if typeset -f "_validate_requirements_buildmode_${_buildmode}" &> /dev/null; then
+        if typeset -f "_build_buildmode_${_buildmode}" &>/dev/null; then
+            if typeset -f "_validate_requirements_buildmode_${_buildmode}" &>/dev/null; then
                 "_validate_requirements_buildmode_${_buildmode}"
             else
                 _msg_warning "Function '_validate_requirements_buildmode_${_buildmode}' does not exist. Validating the requirements of '${_buildmode}' build mode will not be possible."
@@ -1699,24 +1633,34 @@ _make_version() {
     local _os_release
 
     _msg_info "Creating version files..."
-    # Write version file to system installation dir
-    rm -f -- "${pacstrap_dir}/version"
-    printf '%s\n' "${iso_version}" > "${pacstrap_dir}/version"
 
     if [[ "${buildmode}" == @("iso"|"netboot") ]]; then
+        # Write version file to system installation dir
+        rm -f -- "${pacstrap_dir}/version"
+        printf '%s\n' "${iso_version}" >"${pacstrap_dir}/version"
+
         install -d -m 0755 -- "${isofs_dir}/${install_dir}"
         # Write version file to ISO 9660
-        printf '%s\n' "${iso_version}" > "${isofs_dir}/${install_dir}/version"
-
+        printf '%s\n' "${iso_version}" >"${isofs_dir}/${install_dir}/version"
+    elif [[ "${buildmode}" == 'bootstrap' ]]; then
+        # Write version file to the root of the tarball
+        rm -f -- "${bootstrap_parent}/version"
+        printf '%s\n' "${iso_version}" >"${bootstrap_parent}/version"
     fi
     if [[ "${buildmode}" == "iso" ]]; then
-        # Write grubenv with version information to ISO 9660
-        # TODO: after sufficient time has passed, do not create this file anymore when GRUB boot modes are used.
-        #       _make_common_bootmode_grub_cfg already creates ${isofs_dir}/boot/grub/grubenv
+        # Write a limited grubenv with version information to install_dir on ISO 9660 for use cases where only the
+        # install_dir is used.
         rm -f -- "${isofs_dir}/${install_dir}/grubenv"
         printf '%.1024s' "$(printf '# GRUB Environment Block\nNAME=%s\nVERSION=%s\n%s' \
             "${iso_name}" "${iso_version}" "$(printf '%0.1s' "#"{1..1024})")" \
-            > "${isofs_dir}/${install_dir}/grubenv"
+            >"${isofs_dir}/${install_dir}/grubenv"
+
+        # Create a /boot/YYYY-mm-dd-HH-MM-SS-00.uuid file on ISO 9660. GRUB will search for it to find the ISO
+        # volume. This is similar to what grub-mkrescue does, except it places the file in /.disk/, but we opt to use a
+        # directory that does not start with a dot to avoid it being accidentally missed when copying the ISO's contents.
+        search_filename="/boot/${iso_uuid}.uuid"
+        install -d -m 755 -- "${isofs_dir}/boot"
+        : >"${isofs_dir}${search_filename}"
     fi
 
     # Append IMAGE_ID & IMAGE_VERSION to os-release
@@ -1728,7 +1672,7 @@ _make_version() {
         _msg_warning "os-release file '${_os_release}' is outside of valid path."
     else
         [[ ! -e "${_os_release}" ]] || sed -i '/^IMAGE_ID=/d;/^IMAGE_VERSION=/d' "${_os_release}"
-        printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${iso_name}" "${iso_version}" >> "${_os_release}"
+        printf 'IMAGE_ID=%s\nIMAGE_VERSION=%s\n' "${iso_name}" "${iso_version}" >>"${_os_release}"
     fi
 
     # Touch /usr/lib/clock-epoch to give another hint on date and time
@@ -1742,11 +1686,11 @@ _make_pkglist() {
     _msg_info "Creating a list of installed packages on live-enviroment..."
     case "${buildmode}" in
         "bootstrap")
-            pacman -Q --sysroot "${pacstrap_dir}" > "${pacstrap_dir}/pkglist.${arch}.txt"
+            pacman -Q --sysroot "${pacstrap_dir}" >"${bootstrap_parent}/pkglist.${arch}.txt"
             ;;
         "iso"|"netboot")
             install -d -m 0755 -- "${isofs_dir}/${install_dir}"
-            pacman -Q --sysroot "${pacstrap_dir}" > "${isofs_dir}/${install_dir}/pkglist.${arch}.txt"
+            pacman -Q --sysroot "${pacstrap_dir}" >"${isofs_dir}/${install_dir}/pkglist.${arch}.txt"
             ;;
     esac
     _msg_info "Done!"
@@ -1775,7 +1719,7 @@ _build_iso_base() {
     # Create working directory
     _run_once _make_work_dir
     # Write build date to file if it does not exist already
-    [[ -e "${work_dir}/build_date" ]] || printf '%s\n' "$SOURCE_DATE_EPOCH" > "${work_dir}/build_date"
+    [[ -e "${work_dir}/build_date" ]] || printf '%s\n' "$SOURCE_DATE_EPOCH" >"${work_dir}/build_date"
 
     [[ "${quiet}" == "y" ]] || _show_config
     _run_once _make_pacman_conf
@@ -1785,6 +1729,9 @@ _build_iso_base() {
     _run_once _make_version
     _run_once _make_customize_airootfs
     _run_once _make_pkglist
+    if [[ "$arch" == @('x86_64'|'i686') ]]; then
+        _run_once _check_if_initramfs_has_ucode
+    fi
     if [[ "${buildmode}" == 'netboot' ]]; then
         _run_once _make_boot_on_iso9660
     else
@@ -1796,7 +1743,7 @@ _build_iso_base() {
 
 # Build the bootstrap buildmode
 _build_buildmode_bootstrap() {
-    local image_name="${iso_name}-bootstrap-${iso_version}-${arch}.tar.gz"
+    local image_name="${iso_name}-bootstrap-${iso_version}-${arch}.tar"
     local run_once_mode="${buildmode}"
     local buildmode_packages="${bootstrap_packages}"
     # Set the package list to use
@@ -1804,8 +1751,20 @@ _build_buildmode_bootstrap() {
 
     # Set up essential directory paths
     pacstrap_dir="${work_dir}/${arch}/bootstrap/root.${arch}"
+    bootstrap_parent="$(dirname -- "${pacstrap_dir}")"
     [[ -d "${work_dir}" ]] || install -d -- "${work_dir}"
     install -d -m 0755 -o 0 -g 0 -- "${pacstrap_dir}"
+
+    # Set tarball extension
+    case "${bootstrap_tarball_compression[0]}" in
+        'bzip') image_name="${image_name}.b2z" ;;
+        'gzip') image_name="${image_name}.gz" ;;
+        'lrzip') image_name="${image_name}.lrz" ;;
+        'lzip') image_name="${image_name}.lz" ;;
+        'lzop') image_name="${image_name}.lzo" ;;
+        'xz') image_name="${image_name}.xz" ;;
+        'zstd'|'zstdmt') image_name="${image_name}.zst" ;;
+    esac
 
     [[ "${quiet}" == "y" ]] || _show_config
     _run_once _make_pacman_conf
@@ -1830,7 +1789,6 @@ _build_buildmode_netboot() {
 
     if [[ -v cert_list ]]; then
         _run_once _sign_netboot_artifacts
-        _cms_sign_artifact "${airootfs_image_filename}"
     fi
     _run_once _export_netboot_artifacts
 }
@@ -1861,15 +1819,15 @@ _build() {
 
 while getopts 'c:p:C:L:P:A:D:w:m:o:g:G:vrh?' arg; do
     case "${arg}" in
-        p) read -r -a override_pkg_list <<< "${OPTARG}" ;;
+        p) read -r -a override_pkg_list <<<"${OPTARG}" ;;
         C) override_pacman_conf="${OPTARG}" ;;
         L) override_iso_label="${OPTARG}" ;;
         P) override_iso_publisher="${OPTARG}" ;;
         A) override_iso_application="${OPTARG}" ;;
         D) override_install_dir="${OPTARG}" ;;
-        c) read -r -a override_cert_list <<< "${OPTARG}" ;;
+        c) read -r -a override_cert_list <<<"${OPTARG}" ;;
         w) override_work_dir="${OPTARG}" ;;
-        m) read -r -a override_buildmodes <<< "${OPTARG}" ;;
+        m) read -r -a override_buildmodes <<<"${OPTARG}" ;;
         o) override_out_dir="${OPTARG}" ;;
         g) override_gpg_key="${OPTARG}" ;;
         G) override_gpg_sender="${OPTARG}" ;;

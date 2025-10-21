@@ -1,5 +1,8 @@
-sudo rm -rf ../work
+sudo mkdir /tmp/archiso
+sudo umount /tmp/archiso
+sudo mount -t tmpfs -o size=16G tmpfs /tmp/archiso
 sudo rm -rf ../out
 
 cd profile
-sudo mkarchiso -v -w ../../work/ -o ../../out .
+sudo ./mklunawolfiso -v -w /tmp/archiso -o ../../out .
+sudo umount /tmp/archiso

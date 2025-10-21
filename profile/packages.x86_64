@@ -1,5 +1,6 @@
 ## Arch Linux Packages ------------------------------
 iptables-nft
+alsa-utils
 amd-ucode
 arch-install-scripts
 archinstall
@@ -7,7 +8,9 @@ archlinux-keyring
 b43-fwcutter
 base
 base-devel
+bcachefs-tools
 bind
+bolt
 brltty
 broadcom-wl
 btrfs-progs
@@ -16,7 +19,6 @@ cloud-init
 cryptsetup
 darkhttpd
 ddrescue
-dhclient
 dhcpcd
 diffutils
 dmidecode
@@ -26,6 +28,7 @@ dosfstools
 e2fsprogs
 edk2-shell
 efibootmgr
+espeakup
 ethtool
 exfatprogs
 f2fs-tools
@@ -43,6 +46,7 @@ iw
 iwd
 jfsutils
 kitty-terminfo
+ldns
 less
 lftp
 libfido2
@@ -61,10 +65,10 @@ mdadm
 mkinitcpio
 mkinitcpio-archiso
 mkinitcpio-nfs-utils
+mmc-utils
 modemmanager
 mtools
 nano
-nano-syntax-highlighting
 nbd
 ndisc6
 nfs-utils
@@ -75,6 +79,7 @@ nvme-cli
 open-iscsi
 open-vm-tools
 openconnect
+openpgp-card-tools
 openssh
 openvpn
 partclone
@@ -84,14 +89,14 @@ pcsclite
 ppp
 pptpclient
 pv
+qemu-guest-agent
 refind
 reflector
-#reiserfsprogs
-rp-pppoe
 rsync
 rxvt-unicode-terminfo
 screen
 sdparm
+sequoia-sq
 sg3_utils
 smartmontools
 sof-firmware
@@ -103,17 +108,20 @@ tcpdump
 terminus-font
 testdisk
 tmux
+tpm2-tools
 tpm2-tss
 udftools
 usb_modeswitch
 usbmuxd
 usbutils
 vim
+virtualbox-guest-utils-nox
 vpnc
 wireless-regdb
 wireless_tools
 wpa_supplicant
 wvdial
+xdg-utils
 xfsprogs
 xl2tpd
 zsh
@@ -132,14 +140,6 @@ lunawolf-plymouth-theme
 lunawolf-hooks
 lunawolf-mirrorlist
 
-## Xorg Server ------------------------------
-xorg
-xorg-server
-xorg-xdpyinfo
-xorg-xinit
-xorg-xkill
-xorg-xrandr
-
 ## Touchpad and Mouse ------------------------------
 xorg-xinput
 xf86-input-libinput
@@ -154,9 +154,7 @@ mesa
 mesa-utils
 virglrenderer
 libglvnd
-intel-opencl
 intel-compute-runtime
-lib32-intel-opencl
 vulkan-intel
 opencl-mesa
 lib32-opencl-mesa
@@ -172,7 +170,6 @@ lib32-opencl-nvidia
 nvidia-prime
 
 ## Hypervisors ------------------------------
-virtualbox-guest-utils
 qemu-guest-agent
 open-vm-tools
 xf86-input-vmmouse
@@ -237,9 +234,9 @@ gutenprint
 ## Installer ------------------------------
 
 ## Calamares
-boost
 calamares
 calamares-config-lunawolf
+kcrash
 
 ## QT Style
 kvantum
@@ -253,8 +250,6 @@ gnome-shell-extensions
 gnome-browser-connector
 
 ## Display Manager ------------------------------
-#sddm-git
-#lunawolf-gnome-sddm-theme
 gdm
 qt6-multimedia
 
@@ -288,10 +283,8 @@ gparted
 gnome-keyring
 meld
 polkit
-simplescreenrecorder
 udisks2
 xclip
-xcolor
 xdotool
 yad
 git

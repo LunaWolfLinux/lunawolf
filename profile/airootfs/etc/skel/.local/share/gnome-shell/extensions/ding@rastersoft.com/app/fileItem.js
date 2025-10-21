@@ -18,6 +18,7 @@
  */
 'use strict';
 const Gtk = imports.gi.Gtk;
+const Atk = imports.gi.Atk;
 const Gdk = imports.gi.Gdk;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
@@ -54,38 +55,7 @@ var FileItem = class extends desktopIconItem.desktopIconItem {
         /* Set the metadata and update relevant UI */
         this._updateMetadataFromFileInfo(fileInfo);
 
-        let accessible = this._containerAccessibility.get_accessible();
-        switch (this._fileExtra) {
-            default:
-                if (this._isDirectory) {
-                    /** TRANSLATORS: when using a screen reader, this is the text read when a folder is
-                        selected. Example: if a folder named "things" is selected, it will say "things Folder" */
-                    accessible.set_name(_("${VisibleName} Folder").replace("${VisibleName}", this._getVisibleName()));
-                } else {
-                    /** TRANSLATORS: when using a screen reader, this is the text read when a normal file is
-                        selected. Example: if a file named "my_picture.jpg" is selected, it will say "my_picture.jpg File" */
-                    accessible.set_name(_("${VisibleName} File").replace("${VisibleName}", this._getVisibleName()));
-                }
-                break;
-            case  Enums.FileType.USER_DIRECTORY_HOME:
-                accessible.set_name(_("Home"));
-                break;
-            case Enums.FileType.USER_DIRECTORY_TRASH:
-                /** TRANSLATORS: when using a screen reader, this is the text read when the trash folder is
-                    selected. */
-                accessible.set_name(_("Trash"));
-                break;
-            case Enums.FileType.EXTERNAL_DRIVE:
-                /** TRANSLATORS: when using a screen reader, this is the text read when an external drive is
-                    selected. Example: if a USB stick named "my_portable" is selected, it will say "my_portable Drive" */
-                accessible.set_name(_("${VisibleName} Drive").replace("${VisibleName}", this._getVisibleName()));
-                break;
-            case Enums.FileType.STACK_TOP:
-                /** TRANSLATORS: when using a screen reader, this is the text read when a stack is
-                    selected. Example: if a stack named "pictures" is selected, it will say "pictures Stack" */
-                accessible.set_name(_("${VisibleName} Stack").replace("${VisibleName}", this._getVisibleName()));
-                break;
-        }
+        this.setAccessibleName();
 
         this._updateIcon().catch(e => {
             print(`Exception while updating an icon: ${e.message}\n${e.stack}`);
@@ -141,6 +111,45 @@ var FileItem = class extends desktopIconItem.desktopIconItem {
         if (this._dropCoordinates) {
             this.setSelected();
         }
+    }
+
+    setAccessibleName() {
+        let name = "";
+        switch (this._fileExtra) {
+            default:
+                if (this._isDirectory) {
+                    /** TRANSLATORS: when using a screen reader, this is the text read when a folder is
+                        highlighted. Example: if a folder named "things" is highlighted, it will say "things Folder" */
+                    name = _("${VisibleName} Folder");
+                } else {
+                    /** TRANSLATORS: when using a screen reader, this is the text read when a normal file is
+                        highlighted. Example: if a file named "my_picture.jpg" is highlighted, it will say "my_picture.jpg File" */
+                    name = _("${VisibleName} File");
+                }
+                break;
+            case  Enums.FileType.USER_DIRECTORY_HOME:
+                name = _("Home");
+                break;
+            case Enums.FileType.USER_DIRECTORY_TRASH:
+                /** TRANSLATORS: when using a screen reader, this is the text read when the trash folder is
+                    highlighted. */
+                name = _("Trash");
+                break;
+            case Enums.FileType.EXTERNAL_DRIVE:
+                /** TRANSLATORS: when using a screen reader, this is the text read when an external drive is
+                    highlighted. Example: if a USB stick named "my_portable" is highlighted, it will say "my_portable Drive" */
+                name = _("${VisibleName} Drive");
+                break;
+            case Enums.FileType.STACK_TOP:
+                /** TRANSLATORS: when using a screen reader, this is the text read when a stack is
+                    selected. Example: if a stack named "pictures" is selected, it will say "pictures Stack" */
+                name = _("${VisibleName} Stack");
+                break;
+        }
+        const accessible = this._containerAccessibility.get_accessible();
+        /** TRANSLATORS: the "selected" string is for screen readers. It is added at the end of the speaked sentence when the icon
+            is selected. */
+        accessible.set_name(name.replace("${VisibleName}", this._getVisibleName()) + (this._isSelected ? _(" Selected") : ""));
     }
 
     setRenamePopup(renameWindow) {

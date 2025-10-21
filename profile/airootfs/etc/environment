@@ -6,4 +6,4 @@
 QT_QPA_PLATFORMTHEME=qt6ct
 EDITOR=nano
 BROWSER=firefox
-PATH="/usr/share/lunawolf/scripts"
+PATH="/usr/share/lunawolf/scripts:$PATH"

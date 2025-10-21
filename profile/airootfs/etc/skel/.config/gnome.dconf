@@ -148,28 +148,6 @@ show-category-sub-menus=true
 update-notifier-project-version=65
 vert-separator=true
 
-[org/gnome/shell/extensions/blur-my-shell]
-settings-version=2
-
-[org/gnome/shell/extensions/blur-my-shell/appfolder]
-brightness=0.59999999999999998
-sigma=30
-
-[org/gnome/shell/extensions/blur-my-shell/dash-to-dock]
-blur=true
-brightness=0.59999999999999998
-sigma=30
-static-blur=true
-style-dash-to-dock=0
-
-[org/gnome/shell/extensions/blur-my-shell/panel]
-brightness=0.59999999999999998
-sigma=30
-
-[org/gnome/shell/extensions/blur-my-shell/window-list]
-brightness=0.59999999999999998
-sigma=30
-
 [org/gnome/shell/extensions/dash-to-panel]
 animate-appicon-hover=false
 animate-appicon-hover-animation-extent={'RIPPLE': 4, 'PLANK': 4, 'SIMPLE': 1}
@@ -200,7 +178,7 @@ window-preview-title-position='TOP'
 
 [org/gnome/shell/extensions/ding]
 add-volumes-opposite=false
-check-x11wayland=true
+check-x11wayland=false
 dark-text-in-labels=false
 icon-size='tiny'
 show-home=true

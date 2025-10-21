@@ -47,8 +47,6 @@ var DesktopGrid = class extends SignalManager.SignalManager{
         this.createGrids();
 
         this._window = new Gtk.ApplicationWindow({application: desktopManager.mainApp, 'title': desktopName});
-        this._accessibility = this._window.get_accessible();
-        this._accessibility.set_name(_(`Desktop icons`));
         this._windowContext = this._window.get_style_context();
         if (this._asDesktop) {
             this._window.set_decorated(false);
