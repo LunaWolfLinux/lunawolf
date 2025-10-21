@@ -1,10 +1,12 @@
 ## Arch Linux Packages ------------------------------
-#alsa-utils
+iptables-nft
 amd-ucode
 arch-install-scripts
 archinstall
+archlinux-keyring
 b43-fwcutter
 base
+base-devel
 bind
 brltty
 broadcom-wl
@@ -24,19 +26,15 @@ dosfstools
 e2fsprogs
 edk2-shell
 efibootmgr
-#espeakup
 ethtool
 exfatprogs
 f2fs-tools
 fatresize
 foot-terminfo
 fsarchiver
-gnu-netcat
 gpart
 gpm
 gptfdisk
-#grml-zsh-config
-#grub
 hdparm
 hyperv
 intel-ucode
@@ -53,7 +51,6 @@ linux
 linux-atm
 linux-firmware
 linux-firmware-marvell
-#livecd-sounds
 lsscsi
 lvm2
 lynx
@@ -61,14 +58,13 @@ man-db
 man-pages
 mc
 mdadm
-#memtest86+
-#memtest86+-efi
 mkinitcpio
 mkinitcpio-archiso
 mkinitcpio-nfs-utils
 modemmanager
 mtools
 nano
+nano-syntax-highlighting
 nbd
 ndisc6
 nfs-utils
@@ -88,10 +84,9 @@ pcsclite
 ppp
 pptpclient
 pv
-#qemu-guest-agent
 refind
 reflector
-reiserfsprogs
+#reiserfsprogs
 rp-pppoe
 rsync
 rxvt-unicode-terminfo
@@ -114,9 +109,7 @@ usb_modeswitch
 usbmuxd
 usbutils
 vim
-#virtualbox-guest-utils-nox
 vpnc
-#wezterm-terminfo
 wireless-regdb
 wireless_tools
 wpa_supplicant
@@ -141,6 +134,11 @@ lunawolf-mirrorlist
 
 ## Xorg Server ------------------------------
 xorg
+xorg-server
+xorg-xdpyinfo
+xorg-xinit
+xorg-xkill
+xorg-xrandr
 
 ## Touchpad and Mouse ------------------------------
 xorg-xinput
@@ -154,12 +152,24 @@ xf86-video-amdgpu
 xf86-video-ati
 mesa
 mesa-utils
+virglrenderer
+libglvnd
+intel-opencl
+intel-compute-runtime
+lib32-intel-opencl
+vulkan-intel
+opencl-mesa
+lib32-opencl-mesa
+vulkan-radeon
 
 ## GPU Drivers (Nvidia) ------------------------------
 xf86-video-nouveau
 nvidia
 nvidia-utils
 nvidia-settings
+opencl-nvidia
+lib32-opencl-nvidia
+nvidia-prime
 
 ## Hypervisors ------------------------------
 virtualbox-guest-utils
@@ -180,6 +190,7 @@ networkmanager-vpnc
 network-manager-sstp
 nm-connection-editor
 network-manager-applet
+samba
 
 ## Bluetooth
 bluez
@@ -233,15 +244,36 @@ calamares-config-lunawolf
 ## QT Style
 kvantum
 qt5ct
-
-## Display Manager ------------------------------
-sddm-git
-lunawolf-sddm-theme
+qt6ct
 
 ## Desktop ------------------------------
-xfce4
-xfce4-goodies
-lunawolf-xfce
+gnome
+gnome-tweaks
+gnome-shell-extensions
+gnome-browser-connector
+
+## Display Manager ------------------------------
+#sddm-git
+#lunawolf-gnome-sddm-theme
+gdm
+qt6-multimedia
+
+## Gnome Extras ------------------------------
+dconf-editor
+endeavour
+eog
+evolution
+file-roller
+geary
+ghex
+gitg
+glade
+gnome-multi-writer
+gnome-notes
+gnome-photos
+gnome-sound-recorder
+gnome-terminal
+seahorse
 
 # Apps
 firefox
@@ -263,11 +295,14 @@ xcolor
 xdotool
 yad
 git
+xorg-drivers
+flatpak
 
 # LunaWolf Packages
 lunawolf-cursors
 lunawolf-icons
-lunawolf-themes
+lunawolf-gnome-default-theme
+lunawolf-theme-app
 lunawolf-wallpapers
 lunawolf-about
 lunawolf-artworks
@@ -285,6 +320,13 @@ noto-fonts
 noto-fonts-emoji
 noto-fonts-cjk
 terminus-font
+cantarell-fonts
+noto-fonts-extra
+ttf-bitstream-vera
+ttf-dejavu
+ttf-liberation
+ttf-opensans
+ttf-jetbrains-mono
 
 ## Multimedia
 ffmpeg
@@ -307,8 +349,6 @@ gvfs-google
 highlight
 trash-cli
 ueberzug
-xdg-user-dirs
-xdg-user-dirs-gtk
 
 ## Archives
 bzip2
@@ -344,7 +384,6 @@ htop
 nethogs
 ncdu
 powertop
-ranger
 vim
 
 ## AUR Packages

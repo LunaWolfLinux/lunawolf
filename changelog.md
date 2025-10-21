@@ -1,8 +1,15 @@
+### April 2025
+
+- Anniversary Update
+- Changed from XFCE to Gnome
+- Removed Ranger
+- Updated all packages
+- Updated Artwork
+
 ### November 2024
 
 - Quarterly ISO 
 - Updated packages
-
 
 ### July 2024
 

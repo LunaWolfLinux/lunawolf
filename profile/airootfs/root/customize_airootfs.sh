@@ -71,14 +71,14 @@ sed -i -e 's#SHELL=.*#SHELL=/bin/zsh#g' /etc/default/useradd
 
 ## -------------------------------------------------------------- ##
 
-## Copy Few Configs Into Root Dir
+## Copy GNOME Configs Into Root Dir
 rdir="/root/.config"
 sdir="/etc/skel"
 if [[ ! -d "$rdir" ]]; then
 	mkdir "$rdir"
 fi
 
-rconfig=(geany gtk-3.0 Kvantum neofetch qt5ct ranger Thunar xfce4)
+rconfig=(gnome-shell gnome-terminal gnome-tweaks nautilus)
 for cfg in "${rconfig[@]}"; do
 	if [[ -e "$sdir/.config/$cfg" ]]; then
 		cp -rf "$sdir"/.config/"$cfg" "$rdir"
@@ -95,8 +95,8 @@ done
 ## -------------------------------------------------------------- ##
 
 ## Fix wallpaper in xfce
-mv /usr/share/backgrounds/xfce/xfce-shapes.svg /usr/share/backgrounds/xfce/xfce-shapes-ac.svg
-cp -rf /usr/share/backgrounds/default.jpg /usr/share/backgrounds/xfce/xfce-shapes.svg
+#mv /usr/share/backgrounds/xfce/xfce-shapes.svg /usr/share/backgrounds/xfce/xfce-shapes-ac.svg
+#cp -rf /usr/share/backgrounds/default.jpg /usr/share/backgrounds/xfce/xfce-shapes.svg
 
 ## -------------------------------------------------------------- ##
 
@@ -121,23 +121,11 @@ sed -i -e 's#GRUB_THEME=.*#GRUB_THEME="/boot/grub/themes/lunawolf/theme.txt"#g' 
 ## Fix cursor theme
 rm -rf /usr/share/icons/default
 
-## Update xdg-user-dirs for bookmarks in thunar and pcmanfm
-runuser -l liveuser -c 'xdg-user-dirs-update'
-runuser -l liveuser -c 'xdg-user-dirs-gtk-update'
-xdg-user-dirs-update
-xdg-user-dirs-gtk-update
-
 ## -------------------------------------------------------------- ##
 
-## Hide Unnecessary Apps
+## Hide Unnecessary Apps for GNOME
 adir="/usr/share/applications"
-apps=(avahi-discover.desktop bssh.desktop bvnc.desktop echomixer.desktop \
-	envy24control.desktop exo-preferred-applications.desktop feh.desktop \
-	hdajackretask.desktop hdspconf.desktop hdspmixer.desktop hwmixvolume.desktop lftp.desktop \
-	libfm-pref-apps.desktop lxshortcut.desktop lstopo.desktop \
-	networkmanager_dmenu.desktop nm-connection-editor.desktop pcmanfm-desktop-pref.desktop \
-	qv4l2.desktop qvidcap.desktop stoken-gui.desktop stoken-gui-small.desktop thunar-bulk-rename.desktop \
-	thunar-settings.desktop thunar-volman-settings.desktop yad-icon-browser.desktop)
+apps=(avahi-discover.desktop gnome-software.desktop)
 
 for app in "${apps[@]}"; do
 	if [[ -e "$adir/$app" ]]; then
@@ -145,8 +133,14 @@ for app in "${apps[@]}"; do
 	fi
 done
 
+
 ## -------------------------------------------------------------- ##
 
-## Initialize Keyring
+## Initialize Keyring for GNOME
 pacman-key --init
 pacman-key --populate
+
+## Initialize GNOME Keyring
+gnome-keyring-daemon --start --components=secrets,pkcs11,ssh
+
+pacman -R gdm
