@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma First Login Setup
+Exec=/usr/local/bin/plasma-firstlogin.sh

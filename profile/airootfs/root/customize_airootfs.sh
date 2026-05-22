@@ -52,8 +52,8 @@ cat >> "/etc/pacman.conf" <<- EOL
 	#[multilib-testing]
 	#Include = /etc/pacman.d/mirrorlist
 
-	#[multilib]
-	#Include = /etc/pacman.d/mirrorlist
+	[multilib]
+	Include = /etc/pacman.d/mirrorlist
 
 	# An example of a custom package repository.  See the pacman manpage for
 	# tips on creating your own repositories.
@@ -133,18 +133,7 @@ gnome-keyring-daemon --start --components=secrets,pkcs11,ssh
 ## -------------------------------------------------------------- ##
 
 ## Enable GDM
-systemctl enable gdm
-
-## -------------------------------------------------------------- ##
-
-## Apply GDM Theme
-mv /usr/share/gnome-shell/gnome-shell-theme.gresourced /usr/share/gnome-shell/gnome-shell-theme.gresource
-
-## -------------------------------------------------------------- ##
-
-## Fix Extension Perms
-chmod -R 755 /etc/skel/.local/share/gnome-shell/extensions
-chmod -R 755 /home/liveuser/.local/share/gnome-shell/extensions
+systemctl enable plasmalogin
 
 ## -------------------------------------------------------------- ##
 
@@ -156,3 +145,6 @@ sed -i '/pam_motd.so/d' "/etc/pam.d/system-login"
 ## Enable Network Manager
 set +e +u
 systemctl enable NetworkManager || echo "Warning: some_command failed, continuing..."
+
+## Fix Startup script
+sudo chmod +x /usr/local/bin/plasma-firstlogin.sh

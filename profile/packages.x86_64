@@ -51,7 +51,8 @@ less
 lftp
 libfido2
 libusb-compat
-linux
+linux-lts
+linux-lts-headers
 linux-atm
 linux-firmware
 linux-firmware-marvell
@@ -130,7 +131,7 @@ zsh
 os-prober
 lsb-release
 lunawolf/grub
-lunawolf-grub-theme
+lunawolf-kde-grub-theme
 
 ## Splash Screen ----------------------------------
 lunawolf/plymouth
@@ -162,7 +163,7 @@ vulkan-radeon
 
 ## GPU Drivers (Nvidia) ------------------------------
 xf86-video-nouveau
-nvidia
+nvidia-open-lts
 nvidia-utils
 nvidia-settings
 opencl-nvidia
@@ -235,50 +236,87 @@ gutenprint
 
 ## Calamares
 calamares
-calamares-config-lunawolf
+calamares-kde-config-lunawolf
 kcrash
 
 ## QT Style
 kvantum
-qt5ct
-qt6ct
 
 ## Desktop ------------------------------
-gnome
-gnome-tweaks
-gnome-shell-extensions
-gnome-browser-connector
+plasma-desktop
+kde-accessibility-meta
+
+## KDE Apps ------------------------------
+# Graphics
+kcolorchooser
+kdegraphics-thumbnailers
+kolourpaint
+spectacle
+gwenview
+elisa
+kmag
+kmix
+discover
+dolphin
+kalk
+kate
+kbackup
+kcharselect
+konsole
+krecorder
+
+# Network
+kdeconnect
+kdenetwork-filesharing
+kio-extras
+kio-gdrive
+kio-zeroconf
+
+# Other
+kscreen
+svgpart
+ffmpegthumbs
+kcron
+kde-inotify-survey
+khelpcenter
+kio-admin
+kjournald
+ksystemlog
+ark
+filelight
+isoimagewriter
+kdebugsettings
+kdf
+kdialog
+keditbookmarks
+kfind
+kgpg
+ktimer
+kwalletmanager
+markdownpart
+skanpage
+sweeper
+kaccounts-integration
+kpipewire
+plasma-nm
+plasma-pa
+plasma-systemmonitor
+icoutils
+libappimage
+qt6-imageformats
+resvg
+kde-gtk-config
 
 ## Display Manager ------------------------------
-gdm
+plasma-login-manager
 qt6-multimedia
-
-## Gnome Extras ------------------------------
-dconf-editor
-endeavour
-eog
-evolution
-file-roller
-geary
-ghex
-gitg
-glade
-gnome-multi-writer
-gnome-notes
-gnome-photos
-gnome-sound-recorder
-gnome-terminal
-seahorse
 
 # Apps
 firefox
-geany
-geany-plugins
 atril
 
 # Utilities
 acpi
-galculator
 gparted
 gnome-keyring
 meld
@@ -292,17 +330,13 @@ xorg-drivers
 flatpak
 
 # LunaWolf Packages
-lunawolf-cursors
-lunawolf-icons
-lunawolf-gnome-default-theme
-lunawolf-theme-app
+lunawolf-kde-theme
 lunawolf-wallpapers
 lunawolf-about
 lunawolf-artworks
 lunawolf-neofetch
 lunawolf-omz
 lunawolf-geany
-lunawolf-config-qt
 lunawolf-hooks-zsh
 lunawolf-fonts
 
@@ -325,6 +359,7 @@ ttf-jetbrains-mono
 ffmpeg
 ffmpegthumbnailer
 tumbler
+vlc
 
 ## Images
 jasper
@@ -333,12 +368,6 @@ libavif
 libheif
 
 ## Files
-gvfs
-gvfs-mtp
-gvfs-afc
-gvfs-gphoto2
-gvfs-smb
-gvfs-google
 highlight
 trash-cli
 ueberzug
@@ -381,10 +410,7 @@ vim
 
 ## AUR Packages
 downgrade
-gtk3-nocsd-git
-ksuperkey
 mkinitcpio-firmware
-mugshot
 timeshift
 yay
 

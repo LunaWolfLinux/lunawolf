@@ -1,0 +1,17 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.kde.welevenclock",
+    "Name": "KDE Weleven Clock",
+    "Description": "Show date, time and calendar",
+    "Version": "1.0.1",
+    "License": "MIT",
+    "Authors": [
+      {
+        "Name": "Andreas Bratfisch"
+      }
+    ]
+  },
+  "X-Plasma-MainScript": "contents/ui/main.qml",
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "private@email.com",
+                "Name": "HypherionSA"
+            }
+        ],
+        "Category": "Plasma Look And Feel",
+        "Dependencies": [
+        ],
+        "EnabledByDefault": true,
+        "Id": "LunaWolfSplash",
+        "License": "MIT",
+        "Name": "LunaWolf Splash",
+        "Version": "0.0.1"
+    }
+}

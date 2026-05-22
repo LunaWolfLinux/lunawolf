@@ -1,0 +1,9 @@
+[General]
+Version=202
+ViewPropsTimestamp=2026,4,28,19,31,40.937
+ShowToolTips=true
+ShowZoomSlider=false
+
+[KFileDialog Settings]
+Places Icons Auto-resize=false
+Places Icons Static Size=22

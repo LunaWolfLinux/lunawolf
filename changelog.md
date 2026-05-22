@@ -1,3 +1,11 @@
+### May 2026
+
+This one is another major update. We moved away from Gnome, because I'm tired of gnome breaking with every single major update.
+
+- Migrated from Gnome to KDE Plasma
+- Updated all system packages
+- Removed faulty software like mugshot
+
 ### October 2025
 
 Yes, I know this update is super late.... I've been fighting GDM for the past 5 months....
